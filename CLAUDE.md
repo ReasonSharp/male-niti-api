@@ -1,0 +1,67 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## What this is
+
+An Express API for the Male Niti website. It backs the site's dynamic content (services, pricing, portfolio/work, blog, contact form — see `api-spec.yaml` for the OpenAPI contract of the *public read* surface) and also renders quote images on demand. `server.js` only wires middleware and mounts routers; each resource's logic lives in its own file under `routes/`.
+
+Beyond what `api-spec.yaml` documents, `services`, `pricing`, `work`, and `blog` also expose full write endpoints (`POST`/`PUT`/`PATCH`/`DELETE`) for content management, restricted to a super admin — these aren't in the spec since it only covers the public-facing contract, but they exist and are load-bearing. `contact` additionally exposes `GET /` and `PATCH /:id` (mark `completed`), also super-admin-only; its `POST /` stays public per the spec and is the only contact-facing method.
+
+## Commands
+
+```bash
+npm install          # install deps (requires native build toolchain for `canvas`, see below)
+npm run dev           # start with nodemon (auto-restart)
+npm run prod          # same as dev — nodemon is used in both scripts
+```
+
+There is no build step, linter, or test suite configured. **This repo does not run its own Postgres** — it's built to be composed alongside a database (and other services) by another project, which is also responsible for applying `db/schema.sql`. The `pg` Pool connects lazily, so the server itself starts fine without a reachable database, but essentially every route fails until one is reachable — see the note in "Auth, rate limiting, and IP bans" below about `checkBanned` in particular, since that makes even DB-independent routes (like `/v1/api-docs`) fail closed without a database.
+
+### Docker
+
+```bash
+docker build . -t mnapi
+docker run -v "/your/image/output/directory:/public/out:rw" --network your-network -p "50000:50000" --restart unless-stopped -d mnapi
+```
+
+Postgres must already be reachable on `your-network`, with `.env`'s `PGHOST`/`PGPORT`/`PGDATABASE`/`PGUSER`/`PGPASSWORD` pointing at it (baked in at build time, since `.env` is `COPY`'d into the image — see Configuration below).
+
+The Dockerfile is a two-stage alpine build: the first stage installs native build deps (`make g++ jpeg-dev cairo-dev giflib-dev pango-dev libtool autoconf automake`) needed to compile `canvas` from source via `npm ci --build-from-source`. The runtime stage is a **separate, fresh alpine image** — it must independently install the non-`-dev` runtime libs (`cairo jpeg giflib pango`), since only compiled `node_modules` are copied over from the build stage, not shared libraries. If `libcairo.so.2`-style dlopen errors come back, this is the first place to check. It then copies `server.js`, `routes/`, `db/`, `lib/`, the `.env` file, and the `.ttf` fonts, and runs as a non-root `appuser`. There is no `VOLUME` declaration on `/api` — a prior version had one, which caused Docker Compose to silently carry a stale anonymous volume across `--build` recreates, shadowing freshly built code with old files. If code changes ever don't seem to take effect after a rebuild, check for a reintroduced `VOLUME` on a directory the image also writes to.
+
+## Configuration
+
+- `.env` is loaded via `dotenv` and is **tracked in git** in this repo (see commit `5c25825`, ".env.template -> .env") — it is copied into the Docker image directly. Be aware of this when adding secrets; it is not gitignored here despite that being an unusual choice for most repos. The current `PGPASSWORD` in `.env` is a dev-only placeholder — rotate it before any real deployment.
+- `MNAPI_OUTDIR` — directory where generated quote images are written (created if missing).
+- `PGHOST` / `PGPORT` / `PGDATABASE` / `PGUSER` / `PGPASSWORD` — standard `pg` env vars; `db/index.js` instantiates `new Pool()` with no explicit config, so it picks these up automatically. Must be set before `db/index.js` is first required (i.e. after `dotenv.config()` runs in `server.js`).
+- `TRUST_PROXY` — hop count passed to Express's `trust proxy` setting (default `1`). Needed so `req.ip` reflects the real client (for rate limiting/bans) rather than a reverse proxy's address, in front of which this API normally sits in production.
+- `RATE_LIMIT_WINDOW_MS` (default 15 min), `RATE_LIMIT_GENERAL_MAX` (default 300), `RATE_LIMIT_STRICT_MAX` (default 10), `RATE_LIMIT_STRIKE_LIMIT` (default 5), `RATE_LIMIT_STRIKE_WINDOW_MS` (default 1h), `RATE_LIMIT_BAN_DURATION_MS` (default 24h) — all tunable knobs for `lib/rateLimiter.js`, see Architecture below.
+- The server listens on a hardcoded port `50000` (not configurable via env).
+
+## Architecture
+
+- `server.js` — loads `.env`, registers the two custom fonts, and mounts each router at its resource path (`/services`, `/pricing`, `/work`, `/blog`, `/contact`, `/v1/quotable`, `/v1/api-docs`). No business logic here. Note `/v1/quotable` and `/v1/api-docs` are the only versioned paths — a deliberate one-off, not the start of a versioning scheme applied elsewhere.
+- `routes/docs.js` serves Swagger UI (`swagger-ui-express`) at `/v1/api-docs`, rendering `api-spec.yaml` (parsed at request-router-setup time via `js-yaml`). **`api-spec.yaml` documents the full API, not just the original public contract** — it now includes every write endpoint, the `contact` admin endpoints, `/v1/quotable`, and the `bearerAuth` security scheme. When adding or changing any endpoint, update this file in the same change — it's user-facing documentation, not just an artifact from the original design phase, and it'll silently drift otherwise.
+- `routes/services.js`, `routes/pricing.js`, `routes/work.js` are thin config objects passed to `lib/crudResource.js`, a factory that generates the full `GET /`, `POST /`, `PUT /:id`, `PATCH /:id`, `DELETE /:id` set for a table keyed by its `id` column. Add a new uniform resource by adding a table to `db/schema.sql` and a config file here — no route boilerplate needed. `PUT` re-validates all `required` fields (full replace semantics); `PATCH` requires none but 400s if the body has no updatable fields; `DELETE` and lookups 404 on a missing `id`. List responses now include `id` (previously omitted) since it's the handle needed for the other three methods.
+- `routes/blog.js` doesn't use the factory — it's keyed by `slug` (not `id`), and the list endpoint returns summary columns (`limit`/`offset` query params, defaults 20/0) while `GET/PUT/PATCH /blog/:slug` return the full row including `body_hr`/`body_en`. Write logic is hand-rolled here but reuses `lib/buildSet.js` for the same "only touch columns present in the body" behavior as the factory.
+- `lib/buildSet.js` — turns whichever whitelisted columns are present in `req.body` into a parameterized `SET`/`INSERT` column list; shared by `crudResource.js` and `blog.js` so partial-update semantics stay consistent across both.
+- `db/index.js` — the single shared `pg` `Pool`; `db/schema.sql` has the `CREATE TABLE` statements for all five tables (`services`, `pricing_plans`, `work_items`, `blog_posts`, `contact_submissions`) plus the `pgcrypto` extension (used for `gen_random_uuid()` on contact submission ids). This file is the source of truth for the schema, but **this repo doesn't apply it itself** — whatever project composes this API together with a Postgres container is responsible for running it (e.g. mounting it into `/docker-entrypoint-initdb.d`). There's no migration tool, so schema changes mean hand-editing this file and re-applying manually. `slug` is `UNIQUE` on both `work_items` and `blog_posts`.
+- `lib/asyncHandler.js` — wraps async route handlers so a rejected promise logs the error and responds `500` instead of crashing the process; a Postgres unique-violation (`error.code === '23505'`, e.g. a duplicate `slug`) instead responds `409` with the constraint detail. Used by every router to avoid repeating this in each handler.
+- `routes/quotable.js` — the image-rendering endpoint, mounted at `/v1/quotable`. `POST /v1/quotable` takes `{ quote, author }`, measures and centers multi-line text on a 1920x1080 canvas, draws curly quote marks around the quote text, right-aligns the author lines (prefixing the first with `~`), and always responds with the generated PNG buffer directly (`res.send(buf)`) regardless of whether saving it to `MNAPI_OUTDIR` succeeds — the disk write is wrapped in its own `try/catch` and only logged on failure, so a permissions problem there doesn't break the response. There's no cleanup of successfully saved files — the output directory grows unbounded over time; this is expected given the current design, not a bug to silently "fix" without discussion.
+- `lib/requestLogger.js` — mounted first in `server.js`, before `express.json()`, so its timer covers the full request lifecycle. Logs one line per request: `yyyy-MM-ddTHH:mm:ssZ (LVL): METHOD /path?query - STATUS - DURATION ms`, where `LVL` is `MSG` (2xx/3xx), `WRN` (4xx), or `ERR` (5xx) — always exactly 3 letters, matching the fixed `ERR`/`WRN`/`MSG`/`DBG` level enumeration (`DBG` isn't reachable from this access-log path).
+- All bilingual content fields follow the API spec's `_hr`/`_en` sibling-field convention (Croatian/English) rather than nested locale objects — keep new columns/fields consistent with that shape.
+
+## Auth, rate limiting, and IP bans
+
+- Auth is a single Bearer API-key scheme, not sessions/JWT. `lib/authenticate.js` is mounted globally and **never rejects** — it just sets `req.auth` to `{ id, label, isSuperAdmin }` for a valid, non-revoked key (matched by SHA-256 hash against `api_keys.key_hash`) or `null` otherwise. Whether auth is actually required is entirely up to each route/middleware downstream.
+  - `lib/requireSuperAdmin.js` — 401 if `req.auth` is null, 403 if it's set but not a super admin. Used on every mutating `services`/`pricing`/`work`/`blog` route and on `contact`'s `GET /` and `PATCH /:id`.
+  - `routes/quotable.js` treats *any* valid key (super admin or not) as "authenticated" — that alone decides whether the generated image also gets written to `MNAPI_OUTDIR`; there's no `requireSuperAdmin` gate on this route at all, unauthenticated calls are still served, just not persisted.
+  - Only the raw key's SHA-256 hash (`lib/apiKeyHash.js`) is ever stored or queried — issue new keys with `npm run create-api-key -- <label> [--admin]`, or `docker exec <container> node scripts/create-api-key.js <label> [--admin]` against a running container. The plaintext key is printed once at creation and is not recoverable; there's no "list/reveal key" endpoint by design. Revoke a key by setting its `revoked_at`.
+- `lib/ipBan.js` — `checkBanned` is mounted globally, first, before rate limiting or auth; it 403s any IP with a row in `banned_ips` whose `expires_at` is null or still in the future. `banIp(ip, reason, durationMs)` upserts a ban (`durationMs: null` = permanent). Because it queries Postgres on every request, a request only ever reaches `/v1/api-docs` or any other DB-independent route if the database is actually reachable — a DB outage takes the whole API down, not just data endpoints.
+- `lib/rateLimiter.js` exports two `express-rate-limit` instances built from the env vars above: `general` (mounted globally) and `strict` (mounted only on `POST /contact` and `POST /v1/quotable` — the spam/CPU-cost-sensitive ones). Both share one in-memory "strikes" counter keyed by IP: each individual rate-limit violation (from either limiter) adds a strike, and hitting `RATE_LIMIT_STRIKE_LIMIT` strikes within `RATE_LIMIT_STRIKE_WINDOW_MS` auto-bans the IP for `RATE_LIMIT_BAN_DURATION_MS` via `banIp`. The super admin (`req.auth.isSuperAdmin`) is exempt from both limiters entirely, so routine admin work can't trip a ban.
+  - The strikes Map is in-memory and resets on restart — acceptable since it's just the on-ramp to a ban, and the ban itself (in Postgres) is what's meant to persist.
+  - To test rate limiting/banning quickly without waiting out the real windows, override the `RATE_LIMIT_*` env vars on a disposable container, e.g. `docker run --rm -e RATE_LIMIT_STRICT_MAX=2 -e RATE_LIMIT_STRIKE_LIMIT=2 -e RATE_LIMIT_STRIKE_WINDOW_MS=600000 -e RATE_LIMIT_BAN_DURATION_MS=10000 --network your-network -p 50001:50000 mnapi` — don't lower the real defaults to test them.
+
+## Known gap
+
+If the bind-mounted `MNAPI_OUTDIR` host directory is owned by `root` (e.g. Docker auto-created it on first `docker run`), writes from the non-root `appuser` inside the container will fail with `EACCES`. Fix by `chown`-ing the host directory to match the container's `appuser` uid, or by removing the directory before the first run so Docker/the app can create it with the right owner.

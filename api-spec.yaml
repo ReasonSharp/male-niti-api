@@ -1,0 +1,624 @@
+openapi: 3.0.3
+info:
+  title: Male Niti Content API
+  description: >
+    Backs the dynamic content on maleniti.com — services, pricing plans,
+    blog posts, portfolio/work items, and contact form submissions — and
+    also renders quote images on demand.
+    Public GET endpoints are cached client-side with a static fallback baked
+    into the frontend (hi-fi/content.jsx) if unreachable.
+    Text fields are bilingual: every user-facing string has a `_hr` and
+    `_en` sibling (Croatian / English) rather than nested locale objects,
+    to match the frontend's existing data shape.
+    Content-management endpoints (anything that isn't a plain public `GET` or
+    `POST /contact`) require a super admin Bearer API key issued via
+    `scripts/create-api-key.js`; unauthenticated or non-admin calls get `401`
+    or `403`. All endpoints are subject to per-IP rate limiting, and repeat
+    offenders are auto-banned — see CLAUDE.md for the exact thresholds.
+  version: "1.0.0"
+servers:
+  - url: https://maleniti.com/api
+    description: Production (self-hosted, same origin)
+  - url: http://localhost:50000
+    description: Local development (docker compose up)
+
+security:
+  - {}
+
+paths:
+  /services:
+    get:
+      summary: List the three service offerings
+      operationId: listServices
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Service' }
+    post:
+      summary: Create a service offering
+      operationId: createService
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Service' }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Service' }
+        "400": { description: Missing required field(s) }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+
+  /services/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer }
+    put:
+      summary: Replace a service offering
+      operationId: replaceService
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Service' }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Service' }
+        "400": { description: Missing required field(s) }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { description: Not found }
+    patch:
+      summary: Partially update a service offering
+      operationId: updateService
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Service' }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Service' }
+        "400": { description: No updatable fields provided }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { description: Not found }
+    delete:
+      summary: Delete a service offering
+      operationId: deleteService
+      security: [{ bearerAuth: [] }]
+      responses:
+        "204": { description: Deleted }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { description: Not found }
+
+  /pricing:
+    get:
+      summary: List engagement/pricing plans
+      operationId: listPricing
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/PricingPlan' }
+    post:
+      summary: Create a pricing plan
+      operationId: createPricingPlan
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PricingPlan' }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PricingPlan' }
+        "400": { description: Missing required field(s) }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+
+  /pricing/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer }
+    put:
+      summary: Replace a pricing plan
+      operationId: replacePricingPlan
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PricingPlan' }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PricingPlan' }
+        "400": { description: Missing required field(s) }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { description: Not found }
+    patch:
+      summary: Partially update a pricing plan
+      operationId: updatePricingPlan
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PricingPlan' }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PricingPlan' }
+        "400": { description: No updatable fields provided }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { description: Not found }
+    delete:
+      summary: Delete a pricing plan
+      operationId: deletePricingPlan
+      security: [{ bearerAuth: [] }]
+      responses:
+        "204": { description: Deleted }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { description: Not found }
+
+  /work:
+    get:
+      summary: List portfolio/work items (one may be featured)
+      operationId: listWork
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/WorkItem' }
+    post:
+      summary: Create a work item
+      operationId: createWorkItem
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WorkItem' }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkItem' }
+        "400": { description: Missing required field(s) }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "409": { description: 'Duplicate slug' }
+
+  /work/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer }
+    put:
+      summary: Replace a work item
+      operationId: replaceWorkItem
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WorkItem' }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkItem' }
+        "400": { description: Missing required field(s) }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { description: Not found }
+        "409": { description: 'Duplicate slug' }
+    patch:
+      summary: Partially update a work item
+      operationId: updateWorkItem
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WorkItem' }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkItem' }
+        "400": { description: No updatable fields provided }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { description: Not found }
+        "409": { description: 'Duplicate slug' }
+    delete:
+      summary: Delete a work item
+      operationId: deleteWorkItem
+      security: [{ bearerAuth: [] }]
+      responses:
+        "204": { description: Deleted }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { description: Not found }
+
+  /blog:
+    get:
+      summary: List blog post summaries, newest first
+      operationId: listBlogPosts
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, default: 20 }
+        - name: offset
+          in: query
+          schema: { type: integer, default: 0 }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/BlogPostSummary' }
+    post:
+      summary: Create a blog post
+      operationId: createBlogPost
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BlogPost' }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BlogPost' }
+        "400": { description: Missing required field(s) }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "409": { description: 'Duplicate slug' }
+
+  /blog/{slug}:
+    parameters:
+      - name: slug
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      summary: Full blog post body, for a future dedicated post page
+      operationId: getBlogPost
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BlogPost' }
+        "404": { description: Not found }
+    put:
+      summary: Replace a blog post
+      operationId: replaceBlogPost
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BlogPost' }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BlogPost' }
+        "400": { description: Missing required field(s) }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { description: Not found }
+        "409": { description: 'Duplicate slug (if renaming via body.slug)' }
+    patch:
+      summary: Partially update a blog post
+      operationId: updateBlogPost
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BlogPost' }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BlogPost' }
+        "400": { description: No updatable fields provided }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { description: Not found }
+        "409": { description: 'Duplicate slug (if renaming via body.slug)' }
+    delete:
+      summary: Delete a blog post
+      operationId: deleteBlogPost
+      security: [{ bearerAuth: [] }]
+      responses:
+        "204": { description: Deleted }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { description: Not found }
+
+  /contact:
+    post:
+      summary: Submit the contact form
+      operationId: submitContact
+      description: Rate limited more tightly than other public endpoints to deter spam.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ContactSubmission' }
+      responses:
+        "201":
+          description: Received
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: string }
+                  received_at: { type: string, format: date-time }
+        "400": { description: Validation error }
+    get:
+      summary: List contact form submissions, newest first
+      operationId: listContactSubmissions
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/ContactRecord' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+
+  /contact/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+    patch:
+      summary: Mark a contact submission as completed (or not)
+      operationId: updateContactSubmission
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [completed]
+              properties:
+                completed: { type: boolean }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ContactRecord' }
+        "400": { description: 'completed (boolean) is required' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { description: Not found }
+
+  /v1/quotable:
+    post:
+      summary: Render a quote as a 1920x1080 PNG image
+      operationId: renderQuote
+      description: >
+        Public endpoint — no auth required to render an image. If called
+        with a valid Bearer API key (super admin or not), the rendered image
+        is additionally saved to disk on the server; unauthenticated calls
+        only get the image back in the response, nothing is persisted.
+        Rate limited more tightly than other public endpoints due to
+        rendering cost.
+      security:
+        - bearerAuth: []
+        - {}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [quote, author]
+              properties:
+                quote: { type: string, description: 'Multi-line quote text (\n-separated)' }
+                author: { type: string, description: 'Multi-line author text (\n-separated)' }
+      responses:
+        "200":
+          description: OK
+          content:
+            image/png:
+              schema: { type: string, format: binary }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: >
+        API key issued via `scripts/create-api-key.js`. Required (and must
+        belong to a super admin) for all content-management endpoints;
+        optional on POST /v1/quotable, where it only determines whether the
+        generated image is also saved to disk.
+
+  responses:
+    Unauthorized:
+      description: Missing or invalid API key
+    Forbidden:
+      description: Authenticated, but not a super admin
+
+  schemas:
+    Service:
+      type: object
+      required: [tone, roman, num_hr, num_en, title_hr, title_en, title2_hr, title2_en, body_hr, body_en, list_hr, list_en]
+      properties:
+        id: { type: integer, readOnly: true }
+        sort_order: { type: integer, description: 'Manual sort position, ascending. Optional, defaults to 0.' }
+        tone: { type: string, enum: [indigo, green] }
+        roman: { type: string, example: "I" }
+        num_hr: { type: string }
+        num_en: { type: string }
+        title_hr: { type: string }
+        title_en: { type: string }
+        title2_hr: { type: string }
+        title2_en: { type: string }
+        body_hr: { type: string }
+        body_en: { type: string }
+        list_hr: { type: array, items: { type: string } }
+        list_en: { type: array, items: { type: string } }
+
+    PricingPlan:
+      type: object
+      required: [tag_hr, tag_en, title_hr, title_en, sub_hr, sub_en, list_hr, list_en, when_hr, when_en, featured]
+      properties:
+        id: { type: integer, readOnly: true }
+        sort_order: { type: integer, description: 'Manual sort position, ascending. Optional, defaults to 0.' }
+        tag_hr: { type: string }
+        tag_en: { type: string }
+        title_hr: { type: string }
+        title_en: { type: string }
+        em_hr: { type: string, description: Substring of title_hr to italicize }
+        em_en: { type: string }
+        sub_hr: { type: string }
+        sub_en: { type: string }
+        list_hr: { type: array, items: { type: string } }
+        list_en: { type: array, items: { type: string } }
+        when_hr: { type: string }
+        when_en: { type: string }
+        featured: { type: boolean, description: Highlights this plan as the recommended option }
+
+    WorkItem:
+      type: object
+      description: >
+        `featured: true` marks the single detailed case study shown at full
+        width; all other items render as minimal placeholder slots
+        (media_label + caption only).
+      required: [featured, media_label_hr, media_label_en, caption_hr, caption_en]
+      properties:
+        id: { type: integer, readOnly: true }
+        sort_order: { type: integer, description: 'Manual sort position, ascending. Optional, defaults to 0.' }
+        featured: { type: boolean }
+        slug: { type: string, nullable: true, description: Must be unique if set }
+        media_label_hr: { type: string }
+        media_label_en: { type: string }
+        caption_hr: { type: string }
+        caption_en: { type: string }
+        status_label_hr: { type: string, nullable: true }
+        status_label_en: { type: string, nullable: true }
+        title_hr: { type: string, nullable: true }
+        title_en: { type: string, nullable: true }
+        title_rest_hr: { type: string, nullable: true }
+        title_rest_en: { type: string, nullable: true }
+        body_hr: { type: string, nullable: true }
+        body_en: { type: string, nullable: true }
+        chips: { type: array, items: { type: string }, nullable: true }
+        client_hr: { type: string, nullable: true }
+        client_en: { type: string, nullable: true }
+        duration_hr: { type: string, nullable: true }
+        duration_en: { type: string, nullable: true }
+        users_hr: { type: string, nullable: true }
+        users_en: { type: string, nullable: true }
+        status_hr: { type: string, nullable: true }
+        status_en: { type: string, nullable: true }
+
+    BlogPostSummary:
+      type: object
+      required: [slug, tag_hr, tag_en, tone, date_hr, date_en, title_hr, title_en, excerpt_hr, excerpt_en, read_hr, read_en]
+      properties:
+        slug: { type: string, description: Must be unique }
+        tag_hr: { type: string }
+        tag_en: { type: string }
+        tone: { type: string, enum: [indigo, green] }
+        date_hr: { type: string }
+        date_en: { type: string }
+        title_hr: { type: string }
+        title_en: { type: string }
+        em_hr: { type: string, description: Substring of title_hr to italicize }
+        em_en: { type: string }
+        excerpt_hr: { type: string }
+        excerpt_en: { type: string }
+        read_hr: { type: string, example: "5 min čitanja" }
+        read_en: { type: string, example: "5 min read" }
+
+    BlogPost:
+      allOf:
+        - { $ref: '#/components/schemas/BlogPostSummary' }
+        - type: object
+          required: [body_hr, body_en]
+          properties:
+            body_hr: { type: string, description: Full HTML or Markdown body }
+            body_en: { type: string }
+
+    ContactSubmission:
+      type: object
+      required: [name, email, msg]
+      properties:
+        name: { type: string }
+        email: { type: string, format: email }
+        kind: { type: string, description: Selected project type, free text }
+        msg: { type: string }
+
+    ContactRecord:
+      allOf:
+        - { $ref: '#/components/schemas/ContactSubmission' }
+        - type: object
+          properties:
+            id: { type: string, format: uuid, readOnly: true }
+            completed: { type: boolean }
+            received_at: { type: string, format: date-time, readOnly: true }
