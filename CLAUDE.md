@@ -37,6 +37,7 @@ The Dockerfile is a two-stage alpine build: the first stage installs native buil
 - `TRUST_PROXY` — hop count passed to Express's `trust proxy` setting (default `1`). Needed so `req.ip` reflects the real client (for rate limiting/bans) rather than a reverse proxy's address, in front of which this API normally sits in production.
 - `RATE_LIMIT_WINDOW_MS` (default 15 min), `RATE_LIMIT_GENERAL_MAX` (default 300), `RATE_LIMIT_STRICT_MAX` (default 10), `RATE_LIMIT_STRIKE_LIMIT` (default 5), `RATE_LIMIT_STRIKE_WINDOW_MS` (default 1h), `RATE_LIMIT_BAN_DURATION_MS` (default 24h) — all tunable knobs for `lib/rateLimiter.js`, see Architecture below.
 - The server listens on a hardcoded port `50000` (not configurable via env).
+- `platform-integration/config.template` + `platform-integration/cfgloc` — the contract with whatever platform deploys this repo (currently the `male-niti` platform's `mn` script): `config.template` is this `.env` shape with values as `${PLATFORM_VAR}` placeholders, filled in via `envsubst` from the *platform's own* `.env`; `cfgloc` is a single line, the absolute in-container path (`/api/.env`) the rendered result gets bind-mounted to. Present because the platform's own `db` service name/credentials aren't knowable from inside this repo. A platform that doesn't provide this subfolder just runs the image with whatever `.env` was baked in at build time instead.
 
 ## Architecture
 
