@@ -10,11 +10,12 @@ info:
     Text fields are bilingual: every user-facing string has a `_hr` and
     `_en` sibling (Croatian / English) rather than nested locale objects,
     to match the frontend's existing data shape.
-    Content-management endpoints (anything that isn't a plain public `GET` or
-    `POST /contact`) require a super admin Bearer API key issued via
-    `scripts/create-api-key.js`; unauthenticated or non-admin calls get `401`
-    or `403`. All endpoints are subject to per-IP rate limiting, and repeat
-    offenders are auto-banned — see CLAUDE.md for the exact thresholds.
+    Content-management endpoints (anything that isn't a plain public `GET`,
+    `POST /contact`, or `POST /api-keys/{id}/rotate` on one's own key) require
+    a super admin Bearer API key issued via `scripts/create-api-key.js`;
+    unauthenticated or non-admin calls get `401` or `403`. All endpoints are
+    subject to per-IP rate limiting, and repeat offenders are auto-banned —
+    see CLAUDE.md for the exact thresholds.
   version: "1.0.0"
 servers:
   - url: https://maleniti.com/api
@@ -486,6 +487,36 @@ paths:
             image/png:
               schema: { type: string, format: binary }
 
+  /api-keys/{id}/rotate:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer }
+    post:
+      summary: Rotate an API key's secret
+      operationId: rotateApiKey
+      description: >
+        Issues a new secret for an existing key, replacing the old one - the
+        id, label, and super-admin flag are unchanged, but the old secret
+        stops working immediately. Any authenticated caller can rotate their
+        own key (id must match the caller's own); a super admin can rotate
+        any key. The new plaintext secret is returned once here, same as
+        `scripts/create-api-key.js` - it cannot be retrieved again afterwards.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiKeyRotated' }
+        "400": { description: Invalid id }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { description: 'Authenticated, but neither the key''s own owner nor a super admin' }
+        "404": { description: Not found }
+        "409": { description: API key has been revoked }
+
 components:
   securitySchemes:
     bearerAuth:
@@ -495,7 +526,9 @@ components:
         API key issued via `scripts/create-api-key.js`. Required (and must
         belong to a super admin) for all content-management endpoints;
         optional on POST /v1/quotable, where it only determines whether the
-        generated image is also saved to disk.
+        generated image is also saved to disk. POST /api-keys/{id}/rotate is
+        the one exception to the "super admin only" rule - any valid key may
+        rotate itself, only rotating a *different* key requires super admin.
 
   responses:
     Unauthorized:
@@ -621,4 +654,19 @@ components:
           properties:
             id: { type: string, format: uuid, readOnly: true }
             completed: { type: boolean }
+
+    ApiKeyRotated:
+      type: object
+      properties:
+        id: { type: integer, readOnly: true }
+        label: { type: string }
+        is_super_admin: { type: boolean }
+        created_at: { type: string, format: date-time }
+        last_used_at: { type: string, format: date-time, nullable: true }
+        key:
+          type: string
+          description: >
+            The new plaintext secret. Shown once, here, and never again -
+            only its hash is stored. Use it as the Bearer token from now on;
+            the previous secret stops working immediately.
             received_at: { type: string, format: date-time, readOnly: true }

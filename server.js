@@ -20,6 +20,7 @@ const blogRouter = require('./routes/blog');
 const contactRouter = require('./routes/contact');
 const quotableRouter = require('./routes/quotable');
 const docsRouter = require('./routes/docs');
+const apiKeysRouter = require('./routes/apiKeys');
 
 const app = express();
 const port = 50000;
@@ -41,6 +42,7 @@ app.use('/blog', blogRouter);
 app.use('/contact', contactRouter);
 app.use('/v1/quotable', quotableRouter);
 app.use('/v1/api-docs', docsRouter);
+app.use('/api-keys', apiKeysRouter);
 
 app.listen(port, () => {
  console.log(`Server is running on port ${port}`);
