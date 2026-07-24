@@ -487,6 +487,29 @@ paths:
             image/png:
               schema: { type: string, format: binary }
 
+  /api-keys/me:
+    get:
+      summary: Identify the calling API key
+      operationId: whoAmI
+      description: >
+        Returns which key is authenticating the request and whether it's a
+        super admin key. Useful for validating a key (e.g. at login) and for
+        a client to discover its own id ahead of POST /api-keys/{id}/rotate.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: integer }
+                  label: { type: string }
+                  is_super_admin: { type: boolean }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+
   /api-keys/{id}/rotate:
     parameters:
       - name: id

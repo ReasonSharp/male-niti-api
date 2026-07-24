@@ -6,6 +6,14 @@ const hashApiKey = require('../lib/apiKeyHash');
 
 const router = express.Router();
 
+// Lets a caller identify which key they're using and whether it's a super
+// admin key - e.g. so a client can validate a key at login time, and so it
+// can discover its own id for POST /:id/rotate self-service.
+router.get('/me', asyncHandler(async (req, res) => {
+ if (!req.auth) return res.status(401).send('Authentication required');
+ res.json({ id: req.auth.id, label: req.auth.label, is_super_admin: req.auth.isSuperAdmin });
+}));
+
 // Rotates an API key's secret in place (id, label, admin flag unchanged).
 // Self-service: a caller can always rotate their own key. A super admin can
 // rotate anyone's. The new plaintext key is returned once here, same as
