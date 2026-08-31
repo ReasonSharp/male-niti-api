@@ -7,17 +7,29 @@ const requireSuperAdmin = require('../lib/requireSuperAdmin');
 const router = express.Router();
 
 const SUMMARY_COLUMNS = `slug, tag_hr, tag_en, tone, date_hr, date_en, title_hr, title_en,
-                         em_hr, em_en, excerpt_hr, excerpt_en, read_hr, read_en`;
+                         em_hr, em_en, excerpt_hr, excerpt_en, read_hr, read_en,
+                         featured, lede_hr, lede_en`;
 
 const WRITABLE_COLUMNS = [
  'slug', 'tag_hr', 'tag_en', 'tone', 'date_hr', 'date_en', 'title_hr', 'title_en',
  'em_hr', 'em_en', 'excerpt_hr', 'excerpt_en', 'read_hr', 'read_en', 'body_hr', 'body_en',
+ 'featured', 'lede_hr', 'lede_en',
 ];
 
 const REQUIRED_COLUMNS = [
  'slug', 'tag_hr', 'tag_en', 'tone', 'date_hr', 'date_en', 'title_hr', 'title_en',
  'excerpt_hr', 'excerpt_en', 'read_hr', 'read_en', 'body_hr', 'body_en',
 ];
+
+// body_hr/body_en are JSONB (an array of {type, text} blocks) - encode
+// explicitly rather than passing the array through as-is, since pg
+// otherwise serializes a JS array as a Postgres array literal, not JSON.
+function encodeBody(body) {
+ const encoded = { ...body };
+ if (Array.isArray(encoded.body_hr)) encoded.body_hr = JSON.stringify(encoded.body_hr);
+ if (Array.isArray(encoded.body_en)) encoded.body_en = JSON.stringify(encoded.body_en);
+ return encoded;
+}
 
 router.get('/', asyncHandler(async (req, res) => {
  const limit = Math.max(0, parseInt(req.query.limit, 10) || 20);
@@ -53,7 +65,7 @@ router.post('/', requireSuperAdmin, asyncHandler(async (req, res) => {
   return res.status(400).send(`Missing required field(s): ${missing.join(', ')}`);
  }
 
- const { cols, values } = buildSetClause(WRITABLE_COLUMNS, req.body);
+ const { cols, values } = buildSetClause(WRITABLE_COLUMNS, encodeBody(req.body));
  const placeholders = cols.map((_, i) => `$${i + 1}`);
 
  const { rows } = await db.query(
@@ -70,7 +82,7 @@ router.put('/:slug', requireSuperAdmin, asyncHandler(async (req, res) => {
   return res.status(400).send(`Missing required field(s): ${missing.join(', ')}`);
  }
 
- const { setClause, values } = buildSetClause(WRITABLE_COLUMNS, req.body);
+ const { setClause, values } = buildSetClause(WRITABLE_COLUMNS, encodeBody(req.body));
  const { rows } = await db.query(
   `UPDATE blog_posts SET ${setClause} WHERE slug = $${values.length + 1}
    RETURNING ${SUMMARY_COLUMNS}, body_hr, body_en`,
@@ -81,7 +93,7 @@ router.put('/:slug', requireSuperAdmin, asyncHandler(async (req, res) => {
 }));
 
 router.patch('/:slug', requireSuperAdmin, asyncHandler(async (req, res) => {
- const { setClause, values } = buildSetClause(WRITABLE_COLUMNS, req.body);
+ const { setClause, values } = buildSetClause(WRITABLE_COLUMNS, encodeBody(req.body));
  if (values.length === 0) return res.status(400).send('No updatable fields provided');
 
  const { rows } = await db.query(

@@ -65,7 +65,11 @@ CREATE TABLE IF NOT EXISTS work_items (
     users_hr TEXT,
     users_en TEXT,
     status_hr TEXT,
-    status_en TEXT
+    status_en TEXT,
+    demo_url TEXT,
+    demo_label_hr TEXT,
+    demo_label_en TEXT,
+    post_slug TEXT
 );
 
 CREATE TABLE IF NOT EXISTS blog_posts (
@@ -85,8 +89,11 @@ CREATE TABLE IF NOT EXISTS blog_posts (
     excerpt_en TEXT NOT NULL,
     read_hr TEXT NOT NULL,
     read_en TEXT NOT NULL,
-    body_hr TEXT NOT NULL,
-    body_en TEXT NOT NULL
+    featured BOOLEAN NOT NULL DEFAULT FALSE,
+    lede_hr TEXT,
+    lede_en TEXT,
+    body_hr JSONB NOT NULL,
+    body_en JSONB NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS contact_submissions (

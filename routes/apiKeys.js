@@ -6,6 +6,28 @@ const hashApiKey = require('../lib/apiKeyHash');
 
 const router = express.Router();
 
+// Public bootstrap endpoint for provisioning the very first admin key, since
+// every other key-issuing path (POST /:id/rotate, scripts/create-api-key.js)
+// requires either an existing key or shell access to the container. Only
+// ever succeeds once: the INSERT is conditioned on no admin key existing yet,
+// atomically, so concurrent callers can't both create one.
+router.post('/bootstrap', asyncHandler(async (req, res) => {
+ const label = typeof req.body.label === 'string' && req.body.label.trim() ? req.body.label : 'admin';
+ const key = crypto.randomBytes(32).toString('base64url');
+
+ const { rows } = await db.query(
+  `INSERT INTO api_keys (key_hash, label, is_super_admin)
+   SELECT $1, $2, true
+   WHERE NOT EXISTS (SELECT 1 FROM api_keys WHERE is_super_admin = true)
+   RETURNING id, label, is_super_admin, created_at`,
+  [hashApiKey(key), label]
+ );
+
+ if (rows.length === 0) return res.status(404).send('Admin API key already exists');
+
+ res.status(201).json({ ...rows[0], key });
+}));
+
 // Lets a caller identify which key they're using and whether it's a super
 // admin key - e.g. so a client can validate a key at login time, and so it
 // can discover its own id for POST /:id/rotate self-service.
