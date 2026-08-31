@@ -4,15 +4,23 @@ info:
   description: >
     Backs the dynamic content on maleniti.com — services, pricing plans,
     blog posts, portfolio/work items, and contact form submissions.
-    All list endpoints are public GET, cached client-side with a static
-    fallback baked into the frontend (hi-fi/content.jsx) if unreachable.
+    Public GET endpoints are cached client-side with a static fallback
+    baked into the frontend (hi-fi/content.jsx) if unreachable.
     Text fields are bilingual: every user-facing string has a `_hr` and
     `_en` sibling (Croatian / English) rather than nested locale objects,
     to match the frontend's existing data shape.
+    Content-management endpoints (anything that isn't a plain public `GET`,
+    `POST /contact`, or `POST /api-keys/bootstrap`) require a super admin
+    Bearer API key issued via `scripts/create-api-key.js` or
+    `POST /api-keys/bootstrap`; unauthenticated or non-admin calls get `401`
+    or `403`.
   version: "1.0.0"
 servers:
   - url: https://maleniti.com/api
     description: Production (self-hosted, same origin)
+
+security:
+  - {}
 
 paths:
   /services:
@@ -27,6 +35,78 @@ paths:
               schema:
                 type: array
                 items: { $ref: '#/components/schemas/Service' }
+    post:
+      summary: Create a service offering
+      operationId: createService
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Service' }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Service' }
+        "400": { description: Missing required field(s) }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+
+  /services/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer }
+    put:
+      summary: Replace a service offering
+      operationId: replaceService
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Service' }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Service' }
+        "400": { description: Missing required field(s) }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { description: Not found }
+    patch:
+      summary: Partially update a service offering
+      operationId: updateService
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Service' }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Service' }
+        "400": { description: No updatable fields provided }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { description: Not found }
+    delete:
+      summary: Delete a service offering
+      operationId: deleteService
+      security: [{ bearerAuth: [] }]
+      responses:
+        "204": { description: Deleted }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { description: Not found }
 
   /pricing:
     get:
@@ -40,6 +120,78 @@ paths:
               schema:
                 type: array
                 items: { $ref: '#/components/schemas/PricingPlan' }
+    post:
+      summary: Create a pricing plan
+      operationId: createPricingPlan
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PricingPlan' }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PricingPlan' }
+        "400": { description: Missing required field(s) }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+
+  /pricing/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer }
+    put:
+      summary: Replace a pricing plan
+      operationId: replacePricingPlan
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PricingPlan' }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PricingPlan' }
+        "400": { description: Missing required field(s) }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { description: Not found }
+    patch:
+      summary: Partially update a pricing plan
+      operationId: updatePricingPlan
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PricingPlan' }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PricingPlan' }
+        "400": { description: No updatable fields provided }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { description: Not found }
+    delete:
+      summary: Delete a pricing plan
+      operationId: deletePricingPlan
+      security: [{ bearerAuth: [] }]
+      responses:
+        "204": { description: Deleted }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { description: Not found }
 
   /work:
     get:
@@ -53,6 +205,81 @@ paths:
               schema:
                 type: array
                 items: { $ref: '#/components/schemas/WorkItem' }
+    post:
+      summary: Create a work item
+      operationId: createWorkItem
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WorkItem' }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkItem' }
+        "400": { description: Missing required field(s) }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "409": { description: 'Duplicate slug' }
+
+  /work/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer }
+    put:
+      summary: Replace a work item
+      operationId: replaceWorkItem
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WorkItem' }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkItem' }
+        "400": { description: Missing required field(s) }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { description: Not found }
+        "409": { description: 'Duplicate slug' }
+    patch:
+      summary: Partially update a work item
+      operationId: updateWorkItem
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WorkItem' }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkItem' }
+        "400": { description: No updatable fields provided }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { description: Not found }
+        "409": { description: 'Duplicate slug' }
+    delete:
+      summary: Delete a work item
+      operationId: deleteWorkItem
+      security: [{ bearerAuth: [] }]
+      responses:
+        "204": { description: Deleted }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { description: Not found }
 
   /blog:
     get:
@@ -73,16 +300,35 @@ paths:
               schema:
                 type: array
                 items: { $ref: '#/components/schemas/BlogPostSummary' }
+    post:
+      summary: Create a blog post
+      operationId: createBlogPost
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BlogPost' }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BlogPost' }
+        "400": { description: Missing required field(s) }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "409": { description: 'Duplicate slug' }
 
   /blog/{slug}:
+    parameters:
+      - name: slug
+        in: path
+        required: true
+        schema: { type: string }
     get:
       summary: Full blog post body, for a future dedicated post page
       operationId: getBlogPost
-      parameters:
-        - name: slug
-          in: path
-          required: true
-          schema: { type: string }
       responses:
         "200":
           description: OK
@@ -90,11 +336,61 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/BlogPost' }
         "404": { description: Not found }
+    put:
+      summary: Replace a blog post
+      operationId: replaceBlogPost
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BlogPost' }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BlogPost' }
+        "400": { description: Missing required field(s) }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { description: Not found }
+        "409": { description: 'Duplicate slug (if renaming via body.slug)' }
+    patch:
+      summary: Partially update a blog post
+      operationId: updateBlogPost
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BlogPost' }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BlogPost' }
+        "400": { description: No updatable fields provided }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { description: Not found }
+        "409": { description: 'Duplicate slug (if renaming via body.slug)' }
+    delete:
+      summary: Delete a blog post
+      operationId: deleteBlogPost
+      security: [{ bearerAuth: [] }]
+      responses:
+        "204": { description: Deleted }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { description: Not found }
 
   /contact:
     post:
       summary: Submit the contact form
       operationId: submitContact
+      description: Rate limited more tightly than other public endpoints to deter spam.
       requestBody:
         required: true
         content:
@@ -111,6 +407,134 @@ paths:
                   id: { type: string }
                   received_at: { type: string, format: date-time }
         "400": { description: Validation error }
+    get:
+      summary: List contact form submissions, newest first
+      operationId: listContactSubmissions
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/ContactRecord' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+
+  /contact/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+    patch:
+      summary: Mark a contact submission as completed (or not)
+      operationId: updateContactSubmission
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [completed]
+              properties:
+                completed: { type: boolean }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ContactRecord' }
+        "400": { description: 'completed (boolean) is required' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { description: Not found }
+
+  /v1/quotable:
+    post:
+      summary: Render a quote as a 1920x1080 PNG image
+      operationId: renderQuote
+      description: >
+        Public endpoint — no auth required to render an image. If called
+        with a valid Bearer API key (super admin or not), the rendered image
+        is additionally saved to disk on the server; unauthenticated calls
+        only get the image back in the response, nothing is persisted.
+        Rate limited more tightly than other public endpoints due to
+        rendering cost.
+      security:
+        - bearerAuth: []
+        - {}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [quote, author]
+              properties:
+                quote: { type: string, description: 'Multi-line quote text (\n-separated)' }
+                author: { type: string, description: 'Multi-line author text (\n-separated)' }
+      responses:
+        "200":
+          description: OK
+          content:
+            image/png:
+              schema: { type: string, format: binary }
+
+  /api-keys/me:
+    get:
+      summary: Identify the calling API key
+      operationId: whoAmI
+      description: >
+        Returns which key is authenticating the request and whether it's a
+        super admin key. Useful for validating a key (e.g. at login) and for
+        a client to discover its own id ahead of POST /api-keys/{id}/rotate.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: integer }
+                  label: { type: string }
+                  is_super_admin: { type: boolean }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+
+  /api-keys/{id}/rotate:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer }
+    post:
+      summary: Rotate an API key's secret
+      operationId: rotateApiKey
+      description: >
+        Issues a new secret for an existing key, replacing the old one - the
+        id, label, and super-admin flag are unchanged, but the old secret
+        stops working immediately. Any authenticated caller can rotate their
+        own key (id must match the caller's own); a super admin can rotate
+        any key. The new plaintext secret is returned once here, same as
+        `scripts/create-api-key.js` - it cannot be retrieved again afterwards.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiKeyRotated' }
+        "400": { description: Invalid id }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { description: 'Authenticated, but neither the key''s own owner nor a super admin' }
+        "404": { description: Not found }
+        "409": { description: API key has been revoked }
 
   /api-keys/bootstrap:
     post:
@@ -149,11 +573,28 @@ paths:
         "404": { description: An admin API key already exists }
 
 components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: >
+        API key issued via `scripts/create-api-key.js` or
+        `POST /api-keys/bootstrap`. Required (and must belong to a super
+        admin) for all content-management endpoints listed above.
+
+  responses:
+    Unauthorized:
+      description: Missing or invalid API key
+    Forbidden:
+      description: Authenticated, but not a super admin
+
   schemas:
     Service:
       type: object
       required: [tone, roman, num_hr, num_en, title_hr, title_en, title2_hr, title2_en, body_hr, body_en, list_hr, list_en]
       properties:
+        id: { type: integer, readOnly: true }
+        sort_order: { type: integer, description: 'Manual sort position, ascending. Optional, defaults to 0.' }
         tone: { type: string, enum: [indigo, green] }
         roman: { type: string, example: "I" }
         num_hr: { type: string }
@@ -171,6 +612,8 @@ components:
       type: object
       required: [tag_hr, tag_en, title_hr, title_en, sub_hr, sub_en, list_hr, list_en, when_hr, when_en, featured]
       properties:
+        id: { type: integer, readOnly: true }
+        sort_order: { type: integer, description: 'Manual sort position, ascending. Optional, defaults to 0.' }
         tag_hr: { type: string }
         tag_en: { type: string }
         title_hr: { type: string }
@@ -193,8 +636,10 @@ components:
         (media_label + caption only).
       required: [featured, media_label_hr, media_label_en, caption_hr, caption_en]
       properties:
+        id: { type: integer, readOnly: true }
+        sort_order: { type: integer, description: 'Manual sort position, ascending. Optional, defaults to 0.' }
         featured: { type: boolean }
-        slug: { type: string, nullable: true }
+        slug: { type: string, nullable: true, description: Must be unique if set }
         media_label_hr: { type: string }
         media_label_en: { type: string }
         caption_hr: { type: string }
@@ -240,7 +685,7 @@ components:
       type: object
       required: [slug, tag_hr, tag_en, tone, date_hr, date_en, title_hr, title_en, excerpt_hr, excerpt_en, read_hr, read_en]
       properties:
-        slug: { type: string }
+        slug: { type: string, description: Must be unique }
         tag_hr: { type: string }
         tag_en: { type: string }
         tone: { type: string, enum: [indigo, green] }
@@ -295,3 +740,27 @@ components:
         email: { type: string, format: email }
         kind: { type: string, description: Selected project type, free text }
         msg: { type: string }
+
+    ContactRecord:
+      allOf:
+        - { $ref: '#/components/schemas/ContactSubmission' }
+        - type: object
+          properties:
+            id: { type: string, format: uuid, readOnly: true }
+            completed: { type: boolean }
+            received_at: { type: string, format: date-time, readOnly: true }
+
+    ApiKeyRotated:
+      type: object
+      properties:
+        id: { type: integer, readOnly: true }
+        label: { type: string }
+        is_super_admin: { type: boolean }
+        created_at: { type: string, format: date-time }
+        last_used_at: { type: string, format: date-time, nullable: true }
+        key:
+          type: string
+          description: >
+            The new plaintext secret. Shown once, here, and never again -
+            only its hash is stored. Use it as the Bearer token from now on;
+            the previous secret stops working immediately.
