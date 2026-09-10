@@ -386,6 +386,94 @@ paths:
         "403": { $ref: '#/components/responses/Forbidden' }
         "404": { description: Not found }
 
+  /imprint:
+    get:
+      summary: Business/registration details for the imprint page
+      description: >
+        Single object, not a list — there is exactly one imprint. Keeps the
+        legally-required registration details (OIB, court/trade register,
+        bank details, etc.) out of the frontend bundle so they can be
+        corrected without a redeploy.
+      operationId: getImprint
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ImprintInfo' }
+        "404": { description: Imprint not set yet }
+    post:
+      summary: Create the imprint (first-time setup)
+      operationId: createImprint
+      description: >
+        Only ever succeeds once, since there is exactly one imprint — 409s
+        if it already exists. Use PATCH to correct it afterwards.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ImprintInfo' }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ImprintInfo' }
+        "400": { description: Missing required field(s) }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "409": { description: Imprint already exists - use PATCH to update it }
+    patch:
+      summary: Update the imprint
+      operationId: updateImprint
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ImprintInfo' }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ImprintInfo' }
+        "400": { description: No updatable fields provided }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { description: Imprint not set yet - use POST to create it }
+
+  /feed.xml:
+    # Overrides the global /api server: every page links this as a plain
+    # root-relative "feed.xml" (RSS convention — readers expect it beside
+    # the site, not nested under an API path), so it must be routed at the
+    # domain root rather than under /api like every other path here.
+    servers:
+      - url: https://maleniti.com
+        description: Site root (not under /api — see the routing note above)
+    get:
+      summary: RSS 2.0 feed of the blog
+      description: >
+        Served by the backend (not the static frontend) so the feed stays in
+        step with /blog. Linked from the footer and declared for autodiscovery
+        in every page head. Built from the same records /blog returns:
+        <title> from title_hr/en, <description> from lede_hr/en or
+        excerpt_hr/en, <link> as https://maleniti.com/blog-post.html?slug={slug},
+        <guid isPermaLink="false"> as the slug, <pubDate> in RFC-822.
+        Serve an English feed via ?lang=en.
+      operationId: getFeed
+      parameters:
+        - name: lang
+          in: query
+          schema: { type: string, enum: [hr, en], default: hr }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/rss+xml:
+              schema: { type: string }
+
   /contact:
     post:
       summary: Submit the contact form
@@ -731,6 +819,31 @@ components:
       properties:
         type: { type: string, enum: [p, h, q] }
         text: { type: string }
+
+    ImprintInfo:
+      type: object
+      description: >
+        Fields are plain (untranslated) except where the value is genuinely
+        language-dependent (legal form, VAT status, register name), which
+        follow the usual `_hr`/`_en` convention.
+      required: [legal_name, legal_form_hr, legal_form_en, owner_name, address, oib, registration_number, register_hr, register_en, vat_status_hr, vat_status_en, bank_name, iban, swift, hosting_provider]
+      properties:
+        legal_name: { type: string, description: Full registered business name }
+        legal_form_hr: { type: string, example: "obrt" }
+        legal_form_en: { type: string, example: "sole trader" }
+        owner_name: { type: string }
+        address: { type: string, description: Registered/business address }
+        oib: { type: string, description: Croatian personal/business tax number }
+        registration_number: { type: string, description: MBS or trade register number }
+        register_hr: { type: string, example: "Trgovački sud u Zagrebu" }
+        register_en: { type: string, example: "Commercial Court in Zagreb" }
+        vat_status_hr: { type: string, example: "nije u sustavu PDV-a" }
+        vat_status_en: { type: string, example: "not VAT registered" }
+        phone: { type: string, nullable: true }
+        bank_name: { type: string }
+        iban: { type: string }
+        swift: { type: string }
+        hosting_provider: { type: string, description: Server provider and/or data centre location }
 
     ContactSubmission:
       type: object

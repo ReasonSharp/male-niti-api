@@ -96,6 +96,29 @@ CREATE TABLE IF NOT EXISTS blog_posts (
     body_en JSONB NOT NULL
 );
 
+-- Single-row table: the site's one legally-required imprint. Application
+-- logic (routes/imprint.js), not a DB constraint, enforces that only one
+-- row ever exists.
+CREATE TABLE IF NOT EXISTS imprint (
+    id SERIAL PRIMARY KEY,
+    legal_name TEXT NOT NULL,
+    legal_form_hr TEXT NOT NULL,
+    legal_form_en TEXT NOT NULL,
+    owner_name TEXT NOT NULL,
+    address TEXT NOT NULL,
+    oib TEXT NOT NULL,
+    registration_number TEXT NOT NULL,
+    register_hr TEXT NOT NULL,
+    register_en TEXT NOT NULL,
+    vat_status_hr TEXT NOT NULL,
+    vat_status_en TEXT NOT NULL,
+    phone TEXT,
+    bank_name TEXT NOT NULL,
+    iban TEXT NOT NULL,
+    swift TEXT NOT NULL,
+    hosting_provider TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS contact_submissions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name TEXT NOT NULL,
