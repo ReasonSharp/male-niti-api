@@ -72,7 +72,9 @@ router.put('/', asyncHandler(async (req, res) => {
      task.allDay,
      task.appointment,
      task.passive,
-     task.recurUntilCompleted,
+     // Older exports (from before this field existed) omit it entirely --
+     // default to false rather than 500ing on the NOT NULL constraint.
+     task.recurUntilCompleted ?? false,
      task.pendingReschedules ?? [],
      task.endDate ?? null,
      JSON.stringify(task.frequency),
