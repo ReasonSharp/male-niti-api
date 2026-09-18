@@ -12,7 +12,7 @@ RUN apk add --update --no-cache \
     automake
 COPY ./package.json ./package-lock.json ./
 RUN npm ci --build-from-source
-COPY ./.env ./*.ttf ./server.js ./api-spec.yaml .
+COPY ./.env ./*.ttf ./server.js ./api-spec.yaml ./atodo-api-spec.yaml .
 COPY ./routes ./routes
 COPY ./db ./db
 COPY ./lib ./lib

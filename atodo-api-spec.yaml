@@ -1,0 +1,905 @@
+# Copied from the sibling `atodo` client project's api-spec.yaml (this
+# repo's routes/atodo/ implements it) -- keep in sync by hand when that
+# spec changes, there's no automated sync between the two repos.
+openapi: 3.0.3
+info:
+  title: A-To-Do API
+  description: >-
+    Backend API for the A-To-Do to-do list application. Implementing this
+    spec turns the app from a single-browser, localStorage-only prototype
+    into a real multi-tenant service: every endpoint below is scoped to the
+    authenticated account (via its bearer token), so two people logging into
+    two different accounts genuinely see two different task lists, rather
+    than the one shared list the pre-backend prototype used.
+
+    All endpoints are prefixed with `/atodo/v1`. The bearer token is an
+    opaque, server-issued credential (a real signed JWT is the intended
+    implementation) that embeds at least `sub` (the account id) and the
+    account's current `subscription` claim, so the client can read
+    subscription status without an extra round trip -- see the `Token`
+    schema. Whenever an endpoint changes something the token's claims
+    reflect (starting/cancelling/scheduling deletion of a subscription), it
+    returns a freshly issued token in place of the old one; the client is
+    expected to discard the old one immediately.
+
+    Every error response uses the same `Error` schema (`{ code, message }`).
+    `code` is a stable, machine-readable identifier the client branches on
+    (e.g. to show a specific translated message); `message` is a
+    human-readable fallback, not meant to be shown as-is in a finished UI.
+  version: "1.0.0"
+externalDocs:
+  description: Client-side implementation notes
+  url: ./CLAUDE.md
+
+servers:
+  - url: "{baseUrl}/atodo/v1"
+    variables:
+      baseUrl:
+        default: http://localhost:4000
+        description: >-
+          The API_BASE_URL configured for the client (see .env/config.js and
+          CLAUDE.md's Configuration section) -- this server entry's `{baseUrl}`
+          is that value, unprefixed; every path below already includes the
+          /atodo/v1 prefix via this server URL, not repeated on each path.
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: Auth
+    description: Registration, email verification, login, and the current session.
+  - name: Users
+    description: The authenticated account's own profile, preferences, and deletion.
+  - name: Tasks
+    description: The authenticated account's to-do list.
+  - name: Subscriptions
+    description: Trial/paid subscription lifecycle, including the Stripe checkout handoff.
+
+paths:
+  /auth/register:
+    post:
+      tags: [Auth]
+      summary: Register a new (unverified) account
+      description: >-
+        Creates a pending registration and emails a verification link to
+        `email` (server-side email delivery; the client never sees the
+        token). Registering again with an email that already has a pending
+        (not yet verified) registration re-sends a fresh link rather than
+        erroring, since the first one may have gone missing or expired.
+        Never reveals whether an email is already a *verified* account
+        (that's `EMAIL_TAKEN`) vs. never registered at all -- see `login`'s
+        own description for the same principle.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email:
+                  type: string
+                  format: email
+                password:
+                  type: string
+                  format: password
+                  minLength: 8
+      responses:
+        "202":
+          description: Verification email sent (or re-sent).
+        "400":
+          description: Malformed email or a password under 8 characters.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              example: { code: INVALID_EMAIL, message: "Enter a valid email address." }
+        "409":
+          description: A verified account already exists with this email.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              example: { code: EMAIL_TAKEN, message: "An account with that email already exists." }
+
+  /auth/verify-email:
+    post:
+      tags: [Auth]
+      summary: Consume an email verification link's token
+      description: >-
+        Promotes a pending registration to a real, loggable-into account.
+        Single-use: the token is consumed as soon as it's looked up here,
+        whether or not it was still within its validity window, so
+        revisiting the same link a second time always reports
+        `INVALID_TOKEN` rather than re-verifying or re-expiring.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token: { type: string }
+      responses:
+        "200":
+          description: Verified.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  email: { type: string, format: email }
+        "400":
+          description: The token doesn't match any pending registration (already used, or never existed).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              example: { code: INVALID_TOKEN, message: "That verification link is invalid or has already been used." }
+        "410":
+          description: The token matched a pending registration, but its validity window (6 hours) has passed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              example: { code: EXPIRED, message: "That verification link has expired. Please register again." }
+
+  /auth/login:
+    post:
+      tags: [Auth]
+      summary: Exchange email + password for a bearer token
+      description: >-
+        Never distinguishes "no such account" from "wrong password" in the
+        response (both are `INVALID_CREDENTIALS`) -- only an account that
+        genuinely exists but hasn't verified its email yet gets its own
+        `EMAIL_NOT_VERIFIED` code, so a mistyped email a visitor never
+        actually registered doesn't leak which emails are/aren't
+        registered. Also where the 12-month-inactivity and
+        scheduled-account-deletion policies (see the Privacy Policy and
+        `DELETE /users/me/schedule-deletion`) actually take effect: logging
+        into an account that's now due for either kind of deletion deletes
+        it right here, before a token is ever issued for it.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string, format: password }
+      responses:
+        "200":
+          description: Logged in.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token: { $ref: "#/components/schemas/Token" }
+                  user: { $ref: "#/components/schemas/User" }
+        "401":
+          description: Wrong email or password.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              example: { code: INVALID_CREDENTIALS, message: "Incorrect email or password." }
+        "403":
+          description: The account exists but its email hasn't been verified yet.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              example: { code: EMAIL_NOT_VERIFIED, message: "That email hasn't been verified yet." }
+        "410":
+          description: The account existed but has just been deleted (inactivity or scheduled deletion) as part of processing this request.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              examples:
+                inactivity:
+                  value: { code: ACCOUNT_EXPIRED_INACTIVITY, message: "This account was automatically deleted after 12 months of inactivity." }
+                scheduled:
+                  value: { code: ACCOUNT_DELETED_SCHEDULED, message: "This account was deleted, as scheduled, once its subscription ended." }
+
+  /auth/me:
+    get:
+      tags: [Auth]
+      summary: Resolve the current bearer token into the live account it belongs to
+      description: >-
+        The one endpoint that can tell a still-valid session apart from one
+        that isn't anymore -- a token's own claims are a snapshot from
+        whenever it was issued, not live truth (see the `Token` schema), so
+        the client is expected to call this (not just trust a locally
+        decoded token) whenever it needs to know the account is still
+        genuinely there, e.g. once per app load. Applies the same
+        12-month-inactivity/scheduled-deletion checks `POST /auth/login`
+        does, since resuming a stored token is just as much "using the
+        account" as a fresh login -- touches the account's `lastActiveAt`
+        (server-internal bookkeeping, not part of the `User` schema below,
+        since the client never needs to read it) the same way a fresh
+        `POST /auth/login` touches `lastLoginAt`, so a long-lived token
+        that keeps getting resumed here isn't wrongly treated as abandoned.
+      responses:
+        "200":
+          description: Still a live account.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "401":
+          description: Missing/malformed/expired bearer token.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "410":
+          description: The account behind this token is gone -- deleted outright (`ACCOUNT_NOT_FOUND`, e.g. from Settings or another session), for 12-month inactivity, or per a completed scheduled deletion. The client must treat any of these as "not logged in" and discard the token.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              examples:
+                notFound:
+                  value: { code: ACCOUNT_NOT_FOUND, message: "This account no longer exists." }
+                inactivity:
+                  value: { code: ACCOUNT_EXPIRED_INACTIVITY, message: "This account was automatically deleted after 12 months of inactivity." }
+                scheduled:
+                  value: { code: ACCOUNT_DELETED_SCHEDULED, message: "This account was deleted, as scheduled, once its subscription ended." }
+
+  /users/me:
+    patch:
+      tags: [Users]
+      summary: Update the current account's profile/preferences
+      description: >-
+        Partial update -- send only the fields you're changing. Covers
+        everything Settings can change (nickname, avatar, time format,
+        background, language) plus the small bits of session state the
+        client persists across reloads (which task is currently
+        active/focused, and the to-do list's current view mode). None of
+        this affects the bearer token's own claims, so the token stays
+        valid and unchanged.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                nickname: { type: string }
+                avatar:
+                  type: string
+                  nullable: true
+                  description: A data URL (the client square-crops/downscales client-side before sending) or null to remove it.
+                timeFormat: { type: string, enum: ["12", "24"] }
+                background:
+                  allOf: [{ $ref: "#/components/schemas/Background" }]
+                  nullable: true
+                language:
+                  type: string
+                  enum: [en, hr]
+                  nullable: true
+                activeTaskId:
+                  type: string
+                  nullable: true
+                activeOccurrenceDate:
+                  type: string
+                  format: date
+                  nullable: true
+                todoViewMode:
+                  type: string
+                  enum: [pending, next-recurrence, all]
+      responses:
+        "200":
+          description: Updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "401":
+          description: Missing/invalid bearer token.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    delete:
+      tags: [Users]
+      summary: Permanently delete the current account and all its data, immediately
+      description: >-
+        Deletes the account row and every task/note/preference tied to it.
+        Takes effect immediately and can't be undone -- this is the
+        "Delete immediately" choice in Settings' danger zone. A paying
+        subscriber choosing to keep access until their current billing
+        period ends instead wants `POST /users/me/schedule-deletion`, not
+        this.
+      responses:
+        "204":
+          description: Deleted. The bearer token used for this request is invalid from this point on.
+        "401":
+          description: Missing/invalid bearer token.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /users/me/schedule-deletion:
+    post:
+      tags: [Users]
+      summary: Schedule the account for deletion once its current subscription period ends
+      description: >-
+        The alternative to `DELETE /users/me` for a paying subscriber who
+        doesn't want to forfeit the rest of a period they already paid for:
+        keeps full access until `subscription.expiresAt`, but immediately
+        sets `subscription.cancelAtPeriodEnd` (there's nothing left to renew
+        into) and `subscription.scheduledDeletion`. The account is actually
+        deleted, server-side, once `expiresAt` passes -- via whatever
+        mechanism enforces that (a scheduled job, or lazily the next time
+        `POST /auth/login`/`GET /auth/me` runs past that point, matching
+        this app's existing inactivity-deletion enforcement) -- unless
+        `DELETE /users/me/schedule-deletion` cancels it first.
+      responses:
+        "200":
+          description: Scheduled.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token: { $ref: "#/components/schemas/Token" }
+                  user: { $ref: "#/components/schemas/User" }
+        "401":
+          description: Missing/invalid bearer token.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: No active subscription to schedule deletion against.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              example: { code: NO_ACTIVE_SUBSCRIPTION, message: "There's no active subscription to schedule deletion for." }
+    delete:
+      tags: [Users]
+      summary: Cancel a previously scheduled deletion
+      description: >-
+        Undoes `POST /users/me/schedule-deletion`'s `scheduledDeletion`
+        flag. Deliberately leaves `cancelAtPeriodEnd` alone: "cancel the
+        deletion" only promises to keep the account around, not to
+        silently resume billing the account holder never explicitly asked
+        to resume.
+      responses:
+        "200":
+          description: Cancelled.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token: { $ref: "#/components/schemas/Token" }
+                  user: { $ref: "#/components/schemas/User" }
+        "401":
+          description: Missing/invalid bearer token.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: No subscription (scheduled for deletion or otherwise) to act on.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              example: { code: NO_SUBSCRIPTION, message: "There's no subscription to cancel deletion for." }
+
+  /tasks:
+    get:
+      tags: [Tasks]
+      summary: Fetch every task belonging to the current account
+      description: >-
+        Returns the account's entire task list in one call -- realistic
+        for a personal to-do list's scale, and simpler than paginating a
+        collection that's meant to all be visible/editable in one screen
+        anyway.
+      responses:
+        "200":
+          description: The account's tasks.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Task" }
+        "401":
+          description: Missing/invalid bearer token.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    put:
+      tags: [Tasks]
+      summary: Replace the current account's entire task list
+      description: >-
+        Bulk replace, not a per-task PATCH/POST -- the client already
+        computes the full resulting list locally for every mutation (adding
+        a task, completing an occurrence, splitting a recurring series,
+        ...) before saving, so this mirrors that instead of requiring a
+        separate granular endpoint per mutation kind. `id` is
+        client-generated (see the `Task` schema) and must be unique within
+        the array; the server doesn't invent or reconcile ids.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: array
+              items: { $ref: "#/components/schemas/Task" }
+      responses:
+        "200":
+          description: Saved -- echoes back exactly what was stored.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Task" }
+        "401":
+          description: Missing/invalid bearer token.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /subscriptions/trial:
+    post:
+      tags: [Subscriptions]
+      summary: Start a 14-day Pro trial for the current account
+      description: >-
+        Identical to a paid Pro subscription while it lasts. Currently
+        allows repeat trials (useful for testing); a production
+        implementation is expected to allow only one trial per account
+        ever, tracked server-side.
+      responses:
+        "200":
+          description: Trial started.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token: { $ref: "#/components/schemas/Token" }
+                  user: { $ref: "#/components/schemas/User" }
+        "401":
+          description: Missing/invalid bearer token.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /subscriptions/checkout-sessions:
+    post:
+      tags: [Subscriptions]
+      summary: Start a Stripe Checkout session for a Pro subscription
+      description: >-
+        Creates a Stripe Checkout session server-side (Stripe API keys
+        never touch the client) and returns the URL to redirect the
+        browser to. Stripe redirects back to `successUrl`/`cancelUrl`
+        (this app's `success.html`/`cancel.html`) once the visitor finishes
+        or abandons payment on Stripe's own hosted page; the client polls
+        `GET /subscriptions/checkout-sessions/{sessionId}` (from
+        `checkout.html`, the intermediate page shown while waiting) to find
+        out which.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [billingInterval, successUrl, cancelUrl]
+              properties:
+                billingInterval:
+                  type: string
+                  enum: [monthly, annual]
+                successUrl:
+                  type: string
+                  format: uri
+                  description: Where Stripe redirects on completed payment (this app's success.html).
+                cancelUrl:
+                  type: string
+                  format: uri
+                  description: Where Stripe redirects if the visitor backs out (this app's cancel.html).
+      responses:
+        "200":
+          description: Session created.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sessionId: { type: string }
+                  checkoutUrl:
+                    type: string
+                    format: uri
+                    description: Stripe's own hosted checkout page -- redirect the browser here.
+        "401":
+          description: Missing/invalid bearer token.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /subscriptions/checkout-sessions/{sessionId}:
+    get:
+      tags: [Subscriptions]
+      summary: Poll a checkout session's status
+      description: >-
+        `checkout.html` polls this until `status` is no longer `pending`.
+        Once `paid`, `token`/`user` reflect the now-active Pro
+        subscription, same shape as every other subscription-mutating
+        endpoint's response, ready to replace whatever's currently stored
+        client-side.
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Current status.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                    enum: [pending, paid, cancelled]
+                  token: { $ref: "#/components/schemas/Token" }
+                  user: { $ref: "#/components/schemas/User" }
+        "401":
+          description: Missing/invalid bearer token.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: No such checkout session (for this account).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /subscriptions/cancel:
+    post:
+      tags: [Subscriptions]
+      summary: Cancel the current subscription at period end
+      description: >-
+        Stops future renewal; access/limits are untouched until
+        `expiresAt`, same as a real "cancel at period end" would behave.
+      responses:
+        "200":
+          description: Cancelled.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token: { $ref: "#/components/schemas/Token" }
+                  user: { $ref: "#/components/schemas/User" }
+        "401":
+          description: Missing/invalid bearer token.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: No active subscription to cancel.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              example: { code: NO_ACTIVE_SUBSCRIPTION, message: "There's no active subscription to cancel." }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >-
+        `Authorization: Bearer <token>`, as returned by `POST /auth/login`
+        or any of the subscription-mutating endpoints. See the `Token`
+        schema for what it's expected to carry.
+
+  schemas:
+    EpochMillis:
+      type: integer
+      format: int64
+      description: >-
+        Milliseconds since the Unix epoch (`Date.now()`/`new Date(ms)` on the
+        client), not an RFC 3339 string -- deliberately, since every one of
+        these fields is used in client-side arithmetic/sorting (elapsed
+        time, "is this still active", "which of these was created first",
+        ...) and epoch millis need no parsing to do that. `dueDate`/
+        `endDate`/occurrence-date fields elsewhere are a different thing --
+        plain `YYYY-MM-DD` strings with no time component, compared as
+        strings, so those stay `format: date`.
+
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          description: Stable, machine-readable -- the client branches on this, not `message`.
+        message:
+          type: string
+          description: Human-readable fallback; a finished client should show its own translated copy per `code` instead.
+
+    Token:
+      type: string
+      description: >-
+        Opaque to the client beyond reading its claims (a real
+        implementation: a signed JWT). Expected claims: `sub` (the account
+        id) and `subscription` (the same shape as `User.subscription`, a
+        snapshot as of when the token was issued -- re-issued by every
+        endpoint that changes it, see each one's own description). The
+        client never trusts a locally decoded token's claims for anything
+        but quick, non-authoritative UI reads (e.g. "should the Subscribe
+        button show right now") -- `GET /auth/me` is the actual source of
+        truth for whether the account/subscription are still genuinely in
+        that state.
+
+    Background:
+      type: object
+      nullable: true
+      description: The Settings background picker's currently-applied Unsplash photo, or null for none.
+      properties:
+        regularUrl: { type: string, format: uri }
+        thumbUrl: { type: string, format: uri }
+        photographerName: { type: string }
+        photographerUrl: { type: string, format: uri }
+        photoLink: { type: string, format: uri }
+
+    Subscription:
+      type: object
+      nullable: true
+      description: null means the account has never subscribed (the "Free" plan).
+      properties:
+        id: { type: string }
+        plan:
+          type: string
+          enum: [trial, pro]
+        billingInterval:
+          type: string
+          enum: [monthly, annual]
+          nullable: true
+          description: null for a trial.
+        startedAt: { $ref: "#/components/schemas/EpochMillis" }
+        expiresAt:
+          allOf: [{ $ref: "#/components/schemas/EpochMillis" }]
+          description: >-
+            The single source of truth for whether the subscription is
+            currently active -- always `now < expiresAt`, never a separately
+            cached boolean, so an expiry is correctly detected the instant
+            it passes rather than only once something happens to re-check it.
+        cancelAtPeriodEnd:
+          type: boolean
+          description: True once the subscription won't renew (see POST /subscriptions/cancel and POST /users/me/schedule-deletion) -- access is untouched until expiresAt regardless.
+        scheduledDeletion:
+          type: boolean
+          description: True if the account itself, not just the subscription, is set to be deleted once expiresAt passes -- see POST /users/me/schedule-deletion.
+
+    User:
+      type: object
+      properties:
+        id: { type: string }
+        email: { type: string, format: email }
+        nickname: { type: string }
+        avatar:
+          type: string
+          nullable: true
+          description: A data URL, or null for the initials-only fallback avatar.
+        timeFormat: { type: string, enum: ["12", "24"] }
+        background: { $ref: "#/components/schemas/Background" }
+        language:
+          type: string
+          enum: [en, hr]
+          nullable: true
+          description: null means never chosen or IP-detected yet -- the client detects and PATCHes a real value the first time this is null right after login.
+        activeTaskId:
+          type: string
+          nullable: true
+          description: Which task (by Task.id) is currently focused/being timed, if any.
+        activeOccurrenceDate:
+          type: string
+          format: date
+          nullable: true
+          description: Which occurrence of activeTaskId, for a recurring task that can show more than one row at once. Always null when activeTaskId is null.
+        todoViewMode:
+          type: string
+          enum: [pending, next-recurrence, all]
+        subscription: { $ref: "#/components/schemas/Subscription" }
+
+    FrequencyOnce:
+      type: object
+      required: [type]
+      properties:
+        type: { type: string, enum: [once] }
+
+    FrequencyDays:
+      type: object
+      required: [type, interval]
+      properties:
+        type: { type: string, enum: [days] }
+        interval: { type: integer, minimum: 1 }
+
+    FrequencyWeeks:
+      type: object
+      required: [type, interval]
+      properties:
+        type: { type: string, enum: [weeks] }
+        interval: { type: integer, minimum: 1 }
+        weekdays:
+          type: array
+          items: { type: integer, minimum: 0, maximum: 6 }
+          description: 0=Sunday..6=Saturday. Omitted/empty falls back to dueDate's own weekday (backward compatibility with older saved tasks).
+
+    FrequencyMonths:
+      type: object
+      required: [type, interval]
+      properties:
+        type: { type: string, enum: [months] }
+        interval: { type: integer, minimum: 1 }
+        dayMode:
+          type: string
+          enum: [day, last, before-last, weekday, multi-weekday, multi-weekday-offset, multi-day]
+          description: Omitted/"day" anchors to dueDate's day-of-month, clamped to shorter months.
+        offset:
+          type: integer
+          minimum: 0
+          maximum: 3
+          description: dayMode "before-last" only -- days before the last day of the month.
+        weekday:
+          type: integer
+          minimum: 0
+          maximum: 6
+          description: dayMode "weekday" only.
+        ordinal:
+          oneOf:
+            - type: integer
+              minimum: 1
+              maximum: 5
+            - type: string
+              enum: [last]
+          description: dayMode "weekday"/"multi-weekday"/"multi-weekday-offset". "last" only valid for dayMode "weekday".
+        weekdays:
+          type: array
+          items: { type: integer, minimum: 0, maximum: 6 }
+          description: dayMode "multi-weekday"/"multi-weekday-offset" only.
+        offsetDirection:
+          type: string
+          enum: [before, after]
+          description: dayMode "multi-weekday-offset" only.
+        offsetDays:
+          type: integer
+          minimum: 0
+          maximum: 6
+          description: dayMode "multi-weekday-offset" only.
+        days:
+          type: array
+          items: { type: integer, minimum: 1, maximum: 31 }
+          description: dayMode "multi-day" only -- exact days of the month.
+
+    Frequency:
+      description: See recurrence.js's own top-of-file comment for the full recurrence rules each shape implies.
+      oneOf:
+        - $ref: "#/components/schemas/FrequencyOnce"
+        - $ref: "#/components/schemas/FrequencyDays"
+        - $ref: "#/components/schemas/FrequencyWeeks"
+        - $ref: "#/components/schemas/FrequencyMonths"
+      discriminator:
+        propertyName: type
+        mapping:
+          once: "#/components/schemas/FrequencyOnce"
+          days: "#/components/schemas/FrequencyDays"
+          weeks: "#/components/schemas/FrequencyWeeks"
+          months: "#/components/schemas/FrequencyMonths"
+
+    Timer:
+      type: object
+      nullable: true
+      properties:
+        mode: { type: string, enum: [countdown, countup] }
+        continuePastZero: { type: boolean }
+        totalSeconds: { type: integer }
+        remainingSeconds:
+          type: integer
+          description: The checkpointed remaining time as of runningSince (or the frozen value if paused) -- the client derives live remaining time from this plus elapsed wall-clock time, not a stored live countdown.
+        runningSince:
+          allOf: [{ $ref: "#/components/schemas/EpochMillis" }]
+          nullable: true
+          description: null while paused/not yet started.
+        occurrenceDate:
+          type: string
+          format: date
+          description: Which occurrence of the task this timer belongs to.
+
+    LogEntry:
+      type: object
+      properties:
+        message: { type: string }
+        timestamp: { $ref: "#/components/schemas/EpochMillis" }
+        occurrenceDate:
+          type: string
+          format: date
+          nullable: true
+
+    Comment:
+      type: object
+      properties:
+        text: { type: string }
+        timestamp: { $ref: "#/components/schemas/EpochMillis" }
+
+    Task:
+      type: object
+      required:
+        - id
+        - taskId
+        - seriesId
+        - name
+        - dueDate
+        - allDay
+        - appointment
+        - passive
+        - recurUntilCompleted
+        - frequency
+        - completions
+        - dismissed
+        - markedFailed
+        - createdAt
+      properties:
+        id:
+          type: string
+          description: This specific record's id -- changes across a recurring-series split (see taskId).
+        taskId:
+          type: string
+          description: >-
+            Stable across a recurring task's whole lineage, including every
+            fragment a "this occurrence"/"this and following" edit or delete
+            has ever split off from it (see id) -- this, not id, is "one
+            task" for any UI or limit that means the logical task a person
+            thinks of, not one specific record.
+        seriesId:
+          type: string
+          description: Groups otherwise-unrelated tasks a person has manually merged into one series in the Manage Tasks modal -- independent of taskId.
+        seriesName:
+          type: string
+          nullable: true
+        name: { type: string }
+        description: { type: string }
+        details: { type: string }
+        dueDate: { type: string, format: date }
+        dueTime:
+          type: string
+          nullable: true
+          description: "HH:MM, 24-hour. null when allDay."
+        allDay: { type: boolean }
+        appointment:
+          type: boolean
+          description: Past-due becomes permanently "failed" instead of carrying over as overdue.
+        passive:
+          type: boolean
+          description: A plain reminder with no "done" state -- its checkbox means "mark failed" (see markedFailed) instead of complete.
+        recurUntilCompleted: { type: boolean }
+        pendingReschedules:
+          type: array
+          items: { type: string, format: date }
+          description: recurUntilCompleted tasks only -- every date its current occurrence has been auto-pushed to since dueDate, still-live until the chain is finally resolved.
+        endDate:
+          type: string
+          format: date
+          nullable: true
+        frequency: { $ref: "#/components/schemas/Frequency" }
+        completions:
+          type: object
+          additionalProperties: { type: boolean }
+          description: Map of occurrence date (ISO) -> true.
+        dismissed:
+          type: object
+          additionalProperties: { type: boolean }
+        markedFailed:
+          type: object
+          additionalProperties: { type: boolean }
+        createdAt:
+          allOf: [{ $ref: "#/components/schemas/EpochMillis" }]
+          description: Of this taskId's lineage, not this specific record -- carried forward unchanged across every split/manual-occurrence fragment (see the free-tier task limits, which grandfather by this field).
+        timer: { $ref: "#/components/schemas/Timer" }
+        log:
+          type: array
+          items: { $ref: "#/components/schemas/LogEntry" }
+        comments:
+          type: array
+          items: { $ref: "#/components/schemas/Comment" }
