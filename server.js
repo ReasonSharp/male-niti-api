@@ -25,6 +25,7 @@ const imprintRouter = require('./routes/imprint');
 const feedRouter = require('./routes/feed');
 const atodoRouter = require('./routes/atodo');
 const atodoDocsRouter = require('./routes/atodo/docs');
+const atodoCors = require('./lib/atodo/cors');
 
 const app = express();
 const port = 50000;
@@ -49,8 +50,8 @@ app.use('/v1/api-docs', docsRouter);
 app.use('/api-keys', apiKeysRouter);
 app.use('/imprint', imprintRouter);
 app.use('/feed.xml', feedRouter);
-app.use('/atodo/v1/api-docs', atodoDocsRouter);
-app.use('/atodo/v1', atodoRouter);
+app.use('/atodo/v1/api-docs', atodoCors, atodoDocsRouter);
+app.use('/atodo/v1', atodoCors, atodoRouter);
 
 app.listen(port, () => {
  console.log(`Server is running on port ${port}`);
