@@ -48,6 +48,18 @@ router.put('/', asyncHandler(async (req, res) => {
  const client = await db.getClient();
  try {
   await client.query('BEGIN');
+
+  // Serializes concurrent PUTs for the same account (e.g. a client-side
+  // retry racing the original request, or a double-fire save) on a
+  // transaction-scoped advisory lock -- without it, two overlapping calls
+  // can both pass the DELETE below seeing the other's not-yet-committed
+  // rows as absent, then both try to INSERT the same (account_id, id),
+  // and the second genuinely violates the primary key once the first
+  // commits. Serializing means the second call's DELETE always sees
+  // (and removes) everything the first one committed, so full-replace
+  // semantics hold and no such race is possible.
+  await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [req.atodoAuth.id]);
+
   await client.query('DELETE FROM atodo.tasks WHERE account_id = $1', [req.atodoAuth.id]);
 
   for (const task of req.body) {
@@ -57,7 +69,33 @@ router.put('/', asyncHandler(async (req, res) => {
       due_date, due_time, all_day, appointment, passive, recur_until_completed,
       pending_reschedules, end_date, frequency, completions, dismissed, marked_failed,
       created_at, timer, log, comments
-     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)`,
+     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)
+     -- A duplicate id within the same request array (a client-side bug,
+     -- e.g. a botched export/merge) would otherwise violate the primary
+     -- key the same way -- last occurrence in the array wins instead.
+     ON CONFLICT (account_id, id) DO UPDATE SET
+      task_id = EXCLUDED.task_id,
+      series_id = EXCLUDED.series_id,
+      series_name = EXCLUDED.series_name,
+      name = EXCLUDED.name,
+      description = EXCLUDED.description,
+      details = EXCLUDED.details,
+      due_date = EXCLUDED.due_date,
+      due_time = EXCLUDED.due_time,
+      all_day = EXCLUDED.all_day,
+      appointment = EXCLUDED.appointment,
+      passive = EXCLUDED.passive,
+      recur_until_completed = EXCLUDED.recur_until_completed,
+      pending_reschedules = EXCLUDED.pending_reschedules,
+      end_date = EXCLUDED.end_date,
+      frequency = EXCLUDED.frequency,
+      completions = EXCLUDED.completions,
+      dismissed = EXCLUDED.dismissed,
+      marked_failed = EXCLUDED.marked_failed,
+      created_at = EXCLUDED.created_at,
+      timer = EXCLUDED.timer,
+      log = EXCLUDED.log,
+      comments = EXCLUDED.comments`,
     [
      req.atodoAuth.id,
      task.id,
