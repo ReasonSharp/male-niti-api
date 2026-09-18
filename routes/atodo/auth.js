@@ -13,6 +13,17 @@ const router = express.Router();
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
+// The frontend's own reachable base URL (see platform-integration/
+// config.template) -- deployment-configured, not client-supplied, so a
+// registration request can't point the emailed link at an arbitrary
+// attacker-controlled domain. handleEmailVerificationLink() in the atodo
+// client reads a `verify` query param off exactly this URL.
+function buildVerificationLink(token) {
+ const link = new URL(process.env.ATODO_FRONTEND_BASE_URL);
+ link.searchParams.set('verify', token);
+ return link.toString();
+}
+
 // register/login are public and credential-guessing/spam-sensitive, same
 // spirit as POST /contact and POST /v1/quotable -- see lib/rateLimiter.js.
 router.post('/register', rateLimiter.strict, asyncHandler(async (req, res) => {
@@ -46,10 +57,17 @@ router.post('/register', rateLimiter.strict, asyncHandler(async (req, res) => {
   [email, hashPassword(password), token]
  );
 
+ const verificationLink = buildVerificationLink(token);
  sendEmail(
   email,
   'Verify your A-To-Do account',
-  `Welcome! Verify your account by submitting this token to POST /auth/verify-email: ${token}`
+  `Welcome! Confirm your email to activate your A-To-Do account.\n\n`
+  + `Open this link within 6 hours:\n${verificationLink}\n\n`
+  + `If your email client doesn't show clickable links, copy and paste the URL above into your browser.`,
+  `<p>Welcome! Confirm your email to activate your A-To-Do account.</p>`
+  + `<p><a href="${verificationLink}">Verify your email</a></p>`
+  + `<p>If the button above doesn't work, copy and paste this URL into your browser:</p>`
+  + `<p>${verificationLink}</p>`
  );
 
  res.status(202).send();
