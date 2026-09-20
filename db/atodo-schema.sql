@@ -48,8 +48,19 @@ CREATE TABLE IF NOT EXISTS atodo.accounts (
     subscription_scheduled_deletion BOOLEAN NOT NULL DEFAULT FALSE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     last_login_at TIMESTAMPTZ,
-    last_active_at TIMESTAMPTZ
+    last_active_at TIMESTAMPTZ,
+    -- Bumped by POST /users/me/change-password (lib/atodo/authenticate.js
+    -- rejects any bearer token issued before this) so changing a password
+    -- ends every other outstanding session, not just this one. NULL means
+    -- never changed -- every token issued since account creation stays valid.
+    password_changed_at TIMESTAMPTZ
 );
+
+-- CREATE TABLE IF NOT EXISTS above is a no-op against an already-deployed
+-- atodo.accounts (this file has no migration tool -- see CLAUDE.md), so
+-- password_changed_at is added separately, idempotently, to actually reach
+-- existing deployments when this file is re-applied.
+ALTER TABLE atodo.accounts ADD COLUMN IF NOT EXISTS password_changed_at TIMESTAMPTZ;
 
 -- One account's entire to-do list, bulk-replaced by PUT /atodo/v1/tasks. id
 -- is client-generated (see api-spec.yaml's Task schema). Date-only fields

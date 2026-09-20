@@ -2,6 +2,7 @@ const express = require('express');
 const db = require('../../db');
 const asyncHandler = require('../../lib/asyncHandler');
 const { toUser, issueToken } = require('../../lib/atodo/token');
+const { hashPassword, verifyPassword } = require('../../lib/atodo/password');
 
 const router = express.Router();
 
@@ -41,6 +42,37 @@ router.patch('/me', asyncHandler(async (req, res) => {
 
  if (rows.length === 0) return res.status(401).json({ code: 'UNAUTHENTICATED', message: 'Missing or invalid bearer token.' });
  res.json(toUser(rows[0]));
+}));
+
+router.post('/me/change-password', asyncHandler(async (req, res) => {
+ const { currentPassword, newPassword } = req.body || {};
+
+ if (typeof newPassword !== 'string' || newPassword.length < 8) {
+  return res.status(400).json({ code: 'INVALID_PASSWORD', message: 'Password must be at least 8 characters.' });
+ }
+
+ const { rows } = await db.query('SELECT * FROM atodo.accounts WHERE id = $1', [req.atodoAuth.id]);
+ if (rows.length === 0) return res.status(401).json({ code: 'UNAUTHENTICATED', message: 'Missing or invalid bearer token.' });
+
+ const account = rows[0];
+ // Requires the current password, not just a valid bearer token -- a
+ // stolen/leaked token alone shouldn't be enough to lock the real account
+ // holder out by silently swapping their password (see api-spec.yaml).
+ if (typeof currentPassword !== 'string' || !verifyPassword(currentPassword, account.password_hash)) {
+  return res.status(401).json({ code: 'INVALID_CREDENTIALS', message: 'Incorrect current password.' });
+ }
+
+ // password_changed_at is embedded in every token as `pwv` (see
+ // lib/atodo/token.js) and checked on every request (lib/atodo/authenticate.js)
+ // -- bumping it here invalidates every token issued before this moment,
+ // including whichever one is authenticating this very request; the one
+ // returned below carries the new pwv, so only this session survives.
+ const { rows: updated } = await db.query(
+  'UPDATE atodo.accounts SET password_hash = $1, password_changed_at = now() WHERE id = $2 RETURNING *',
+  [hashPassword(newPassword), account.id]
+ );
+
+ res.json({ token: issueToken(updated[0]) });
 }));
 
 router.delete('/me', asyncHandler(async (req, res) => {

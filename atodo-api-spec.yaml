@@ -316,6 +316,58 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
+  /users/me/change-password:
+    post:
+      tags: [Users]
+      summary: Change the current account's password
+      description: >-
+        Requires the current password, not just a valid bearer token, for
+        the same reason `POST /auth/login` exists as its own step rather
+        than folding into "anything holding a token can act as this
+        account": a stolen/leaked token alone shouldn't be enough to lock
+        the real account holder out by silently swapping their password.
+        Re-issues a fresh token in the response, the same way every other
+        endpoint that changes something the account's credentials reflect
+        does (see the `Token` schema) -- the client is expected to discard
+        the old one immediately, and the server is expected to invalidate
+        every *other* outstanding token for this account at the same time,
+        the way changing a password ought to end every other session but
+        this one.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [currentPassword, newPassword]
+              properties:
+                currentPassword: { type: string, format: password }
+                newPassword:
+                  type: string
+                  format: password
+                  minLength: 8
+      responses:
+        "200":
+          description: Changed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token: { $ref: "#/components/schemas/Token" }
+        "400":
+          description: newPassword is under 8 characters.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              example: { code: INVALID_PASSWORD, message: "Password must be at least 8 characters." }
+        "401":
+          description: Missing/invalid bearer token, or currentPassword doesn't match the account's actual current password.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              example: { code: INVALID_CREDENTIALS, message: "Incorrect current password." }
+
   /users/me/schedule-deletion:
     post:
       tags: [Users]
