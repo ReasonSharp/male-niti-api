@@ -251,7 +251,7 @@ paths:
       description: >-
         Partial update -- send only the fields you're changing. Covers
         everything Settings can change (nickname, avatar, time format,
-        background, language) plus the small bits of session state the
+        background, language, theme) plus the small bits of session state the
         client persists across reloads (which task is currently
         active/focused, and the to-do list's current view mode). None of
         this affects the bearer token's own claims, so the token stays
@@ -276,6 +276,9 @@ paths:
                   type: string
                   enum: [en, hr]
                   nullable: true
+                theme:
+                  type: string
+                  enum: [dark, light]
                 activeTaskId:
                   type: string
                   nullable: true
@@ -438,20 +441,31 @@ paths:
   /tasks:
     get:
       tags: [Tasks]
-      summary: Fetch every task belonging to the current account
+      summary: Fetch every task and occurrence belonging to the current account
       description: >-
-        Returns the account's entire task list in one call -- realistic
-        for a personal to-do list's scale, and simpler than paginating a
-        collection that's meant to all be visible/editable in one screen
-        anyway.
+        Returns the account's entire task list and occurrence history in one
+        call -- realistic for a personal to-do list's scale, and simpler
+        than paginating a collection that's meant to all be visible/editable
+        in one screen anyway. `tasks` are recurrence *patterns*; `occurrences`
+        are the sparse, per-date record of what's actually happened to a
+        given task's individual occurrences (see the `Occurrence` schema) --
+        an occurrence with nothing recorded against it yet (still pending,
+        no note, no override) has no row here at all.
       responses:
         "200":
-          description: The account's tasks.
+          description: The account's tasks and occurrences.
           content:
             application/json:
               schema:
-                type: array
-                items: { $ref: "#/components/schemas/Task" }
+                type: object
+                required: [tasks, occurrences]
+                properties:
+                  tasks:
+                    type: array
+                    items: { $ref: "#/components/schemas/Task" }
+                  occurrences:
+                    type: array
+                    items: { $ref: "#/components/schemas/Occurrence" }
         "401":
           description: Missing/invalid bearer token.
           content:
@@ -459,30 +473,46 @@ paths:
               schema: { $ref: "#/components/schemas/Error" }
     put:
       tags: [Tasks]
-      summary: Replace the current account's entire task list
+      summary: Replace the current account's entire task/occurrence state
       description: >-
-        Bulk replace, not a per-task PATCH/POST -- the client already
-        computes the full resulting list locally for every mutation (adding
-        a task, completing an occurrence, splitting a recurring series,
-        ...) before saving, so this mirrors that instead of requiring a
-        separate granular endpoint per mutation kind. `id` is
-        client-generated (see the `Task` schema) and must be unique within
-        the array; the server doesn't invent or reconcile ids.
+        Bulk replace, not a per-task/per-occurrence PATCH/POST -- the client
+        already computes the full resulting `tasks`/`occurrences` locally
+        for every mutation (adding a task, completing an occurrence,
+        splitting a recurring series, ...) before saving, so this mirrors
+        that instead of requiring a separate granular endpoint per mutation
+        kind. `id` is client-generated (see the `Task`/`Occurrence` schemas)
+        and must be unique within each array; the server doesn't invent or
+        reconcile ids. Both arrays are replaced atomically -- a save can
+        never land one without the other.
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              type: array
-              items: { $ref: "#/components/schemas/Task" }
+              type: object
+              required: [tasks, occurrences]
+              properties:
+                tasks:
+                  type: array
+                  items: { $ref: "#/components/schemas/Task" }
+                occurrences:
+                  type: array
+                  items: { $ref: "#/components/schemas/Occurrence" }
       responses:
         "200":
           description: Saved -- echoes back exactly what was stored.
           content:
             application/json:
               schema:
-                type: array
-                items: { $ref: "#/components/schemas/Task" }
+                type: object
+                required: [tasks, occurrences]
+                properties:
+                  tasks:
+                    type: array
+                    items: { $ref: "#/components/schemas/Task" }
+                  occurrences:
+                    type: array
+                    items: { $ref: "#/components/schemas/Occurrence" }
         "401":
           description: Missing/invalid bearer token.
           content:
@@ -741,6 +771,10 @@ components:
           enum: [en, hr]
           nullable: true
           description: null means never chosen or IP-detected yet -- the client detects and PATCHes a real value the first time this is null right after login.
+        theme:
+          type: string
+          enum: [dark, light]
+          description: Always a real value -- unlike language, there's no auto-detection step; defaults to dark for a brand new account.
         activeTaskId:
           type: string
           nullable: true
@@ -843,6 +877,11 @@ components:
     Timer:
       type: object
       nullable: true
+      description: >-
+        Lives on the specific Occurrence being timed (see Occurrence.timer)
+        -- which occurrence that is is already implied by the row it's
+        attached to, so unlike before this carries no occurrenceDate of its
+        own.
       properties:
         mode: { type: string, enum: [countdown, countup] }
         continuePastZero: { type: boolean }
@@ -854,10 +893,6 @@ components:
           allOf: [{ $ref: "#/components/schemas/EpochMillis" }]
           nullable: true
           description: null while paused/not yet started.
-        occurrenceDate:
-          type: string
-          format: date
-          description: Which occurrence of the task this timer belongs to.
 
     LogEntry:
       type: object
@@ -868,12 +903,111 @@ components:
           type: string
           format: date
           nullable: true
+          description: >-
+            Task.log only -- which occurrence (if any) triggered this
+            whole-pattern-level event, e.g. the split point of a "this and
+            following" edit. An Occurrence.log entry has no need for this:
+            which occurrence it's about is already implied by the row it's
+            attached to.
 
     Comment:
       type: object
       properties:
         text: { type: string }
         timestamp: { $ref: "#/components/schemas/EpochMillis" }
+
+    OccurrenceOverrides:
+      type: object
+      nullable: true
+      description: >-
+        Per-occurrence field overrides for a "this occurrence only" edit
+        (the 'instance' edit scope) -- any field left out falls back to the
+        owning Task's own current value. Pattern-level fields
+        (frequency/recurUntilCompleted/endDate) are never overridden here;
+        those can only change via the 'all'/'following' edit scopes.
+      properties:
+        name: { type: string }
+        description: { type: string }
+        details: { type: string }
+        dueTime:
+          type: string
+          nullable: true
+          description: "HH:MM, 24-hour. null when allDay."
+        allDay: { type: boolean }
+        appointment: { type: boolean }
+        passive: { type: boolean }
+
+    Occurrence:
+      type: object
+      required: [id, taskId, occurrenceDate, status]
+      properties:
+        id:
+          type: string
+          description: This occurrence's own id, client-generated (see uid()).
+        taskId:
+          type: string
+          description: >-
+            The logical task lineage this occurrence belongs to -- see
+            Task.taskId. Deliberately not a reference to any specific Task
+            record's own id: a "this and following" split forks a new Task
+            row for the pattern going forward, but every already-recorded
+            Occurrence stays correctly associated with the same taskId, with
+            nothing needing to be copied across the split.
+        occurrenceDate:
+          type: string
+          format: date
+          description: >-
+            The canonical date this occurrence is/was for; immutable once
+            created. For a recurUntilCompleted task, the date it *first*
+            became due (see pendingReschedules for how its due date moves
+            while still pending).
+        pendingReschedules:
+          type: array
+          items: { type: string, format: date }
+          description: >-
+            recurUntilCompleted occurrences only -- every date this
+            occurrence has been auto-pushed to since occurrenceDate without
+            being resolved, still-live until the chain is finally resolved
+            (see Task.recurUntilCompleted). A recurUntilCompleted task keeps
+            at most one 'pending' Occurrence alive at a time; completing it
+            resolves this row and a new 'pending' Occurrence is created for
+            the next cycle.
+        status:
+          type: string
+          enum: [pending, completed, failed]
+          description: >-
+            This occurrence's OUTCOME -- mutually exclusive. Independent of
+            `dismissed` below: an occurrence can be 'completed' and not yet
+            dismissed (the brief linger before it visually disappears), or
+            still 'pending' and already dismissed (a genuinely missed
+            occurrence swept off the list without ever being resolved) --
+            these are two separate axes, not one.
+        resolvedAt:
+          allOf: [{ $ref: "#/components/schemas/EpochMillis" }]
+          nullable: true
+          description: When `status` left 'pending', or null while still pending.
+        dismissed:
+          type: boolean
+          description: Whether this occurrence is hidden from the list regardless of `status` -- see `status`'s own description.
+        manual:
+          type: boolean
+          description: True only for an occurrence added via "add one extra occurrence" on a date the task's own pattern doesn't otherwise predict.
+        overrides: { $ref: "#/components/schemas/OccurrenceOverrides" }
+        comments:
+          type: array
+          items: { $ref: "#/components/schemas/Comment" }
+          description: Notes scoped to this one occurrence -- see the side panel's occurrence/task/series scope toggle, and Task.comments for the task-wide equivalent.
+        log:
+          type: array
+          items: { $ref: "#/components/schemas/LogEntry" }
+          description: Occurrence-specific activity (marked done/failed, timer set/cancelled/elapsed, focused/unfocused, ...) -- see Task.log for whole-pattern-level events instead.
+        focusedSeconds:
+          type: integer
+          description: Total focused time logged against this occurrence (see the "Work on this now" focus mode).
+        timerSeconds:
+          type: integer
+          description: Total timer-tracked time logged against this occurrence.
+        timer: { $ref: "#/components/schemas/Timer" }
 
     Task:
       type: object
@@ -888,9 +1022,6 @@ components:
         - passive
         - recurUntilCompleted
         - frequency
-        - completions
-        - dismissed
-        - markedFailed
         - createdAt
       properties:
         id:
@@ -903,7 +1034,8 @@ components:
             fragment a "this occurrence"/"this and following" edit or delete
             has ever split off from it (see id) -- this, not id, is "one
             task" for any UI or limit that means the logical task a person
-            thinks of, not one specific record.
+            thinks of, not one specific record. Also what every Occurrence
+            belonging to this task lineage references (see Occurrence.taskId).
         seriesId:
           type: string
           description: Groups otherwise-unrelated tasks a person has manually merged into one series in the Manage Tasks modal -- independent of taskId.
@@ -924,34 +1056,27 @@ components:
           description: Past-due becomes permanently "failed" instead of carrying over as overdue.
         passive:
           type: boolean
-          description: A plain reminder with no "done" state -- its checkbox means "mark failed" (see markedFailed) instead of complete.
-        recurUntilCompleted: { type: boolean }
-        pendingReschedules:
-          type: array
-          items: { type: string, format: date }
-          description: recurUntilCompleted tasks only -- every date its current occurrence has been auto-pushed to since dueDate, still-live until the chain is finally resolved.
+          description: A plain reminder with no "done" state -- its checkbox means "mark failed" instead of complete (see Occurrence.status).
+        recurUntilCompleted:
+          type: boolean
+          description: >-
+            See Occurrence.pendingReschedules for the live reschedule chain.
+            dueDate below is only ever the date this task was first created
+            with -- never updated again once the first Occurrence exists;
+            the actual current due date lives on that Occurrence instead.
         endDate:
           type: string
           format: date
           nullable: true
         frequency: { $ref: "#/components/schemas/Frequency" }
-        completions:
-          type: object
-          additionalProperties: { type: boolean }
-          description: Map of occurrence date (ISO) -> true.
-        dismissed:
-          type: object
-          additionalProperties: { type: boolean }
-        markedFailed:
-          type: object
-          additionalProperties: { type: boolean }
         createdAt:
           allOf: [{ $ref: "#/components/schemas/EpochMillis" }]
-          description: Of this taskId's lineage, not this specific record -- carried forward unchanged across every split/manual-occurrence fragment (see the free-tier task limits, which grandfather by this field).
-        timer: { $ref: "#/components/schemas/Timer" }
+          description: Of this taskId's lineage, not this specific record -- carried forward unchanged across every split fragment (see the free-tier task limits, which grandfather by this field).
         log:
           type: array
           items: { $ref: "#/components/schemas/LogEntry" }
+          description: Whole-pattern-level activity (creation, whole-task edits, series splits) -- see Occurrence.log for per-occurrence events.
         comments:
           type: array
           items: { $ref: "#/components/schemas/Comment" }
+          description: General notes about the task as a whole (added while the side panel is scoped to 'task'/'series', not to one date) -- see Occurrence.comments for per-occurrence notes.

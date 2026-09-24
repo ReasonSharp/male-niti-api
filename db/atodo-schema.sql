@@ -62,12 +62,20 @@ CREATE TABLE IF NOT EXISTS atodo.accounts (
 -- existing deployments when this file is re-applied.
 ALTER TABLE atodo.accounts ADD COLUMN IF NOT EXISTS password_changed_at TIMESTAMPTZ;
 
--- One account's entire to-do list, bulk-replaced by PUT /atodo/v1/tasks. id
--- is client-generated (see api-spec.yaml's Task schema). Date-only fields
+-- One account's recurrence PATTERNS, bulk-replaced by PUT /atodo/v1/tasks.
+-- id is client-generated (see api-spec.yaml's Task schema). Date-only fields
 -- are kept as plain TEXT rather than DATE, matching the spec's own
 -- "YYYY-MM-DD, compared as strings, never parsed" contract for
 -- dueDate/endDate/occurrence dates, and sidestepping node-pg's
 -- timezone-sensitive DATE-to-Date-object conversion.
+--
+-- Deliberately holds no per-occurrence state (no completions/dismissed/
+-- markedFailed/pendingReschedules/timer/focusLog) -- those live on
+-- atodo.occurrences below, keyed by task_id, not this table's own id, so
+-- that editing/splitting a recurrence pattern can never corrupt or resurrect
+-- another occurrence's recorded outcome. log/comments here are genuinely
+-- task-level (not tied to one date) -- see atodo.occurrences for the
+-- per-occurrence counterparts.
 CREATE TABLE IF NOT EXISTS atodo.tasks (
     account_id UUID NOT NULL REFERENCES atodo.accounts(id) ON DELETE CASCADE,
     id TEXT NOT NULL,
@@ -83,17 +91,63 @@ CREATE TABLE IF NOT EXISTS atodo.tasks (
     appointment BOOLEAN NOT NULL,
     passive BOOLEAN NOT NULL,
     recur_until_completed BOOLEAN NOT NULL,
-    pending_reschedules TEXT[] NOT NULL DEFAULT '{}',
     end_date TEXT,
     frequency JSONB NOT NULL,
-    completions JSONB NOT NULL DEFAULT '{}',
-    dismissed JSONB NOT NULL DEFAULT '{}',
-    marked_failed JSONB NOT NULL DEFAULT '{}',
     created_at BIGINT NOT NULL,
-    timer JSONB,
     log JSONB NOT NULL DEFAULT '[]',
     comments JSONB NOT NULL DEFAULT '[]',
     PRIMARY KEY (account_id, id)
+);
+
+-- One row per *interacted-with* occurrence of a task_id lineage (see the
+-- Task table's own comment) -- sparse: a pattern-predicted date with nothing
+-- done to it yet has no row here at all, same as an absent key in the old
+-- completions/dismissed/markedFailed maps meant "still pending". task_id,
+-- not a specific atodo.tasks row's own id, is the reference: a "this and
+-- following" split forks a new tasks row for the pattern going forward, but
+-- every already-recorded occurrence stays correctly associated with the same
+-- task_id without anything needing to be copied across the split.
+--
+-- recur_until_completed tasks (see atodo.tasks) keep at most one 'pending'
+-- row alive at a time -- its own current occurrence -- with
+-- pending_reschedules tracking every date it's been auto-pushed through
+-- since occurrence_date without being resolved (mirrors the old
+-- tasks.pending_reschedules array 1:1, just relocated: see recurrence.js's
+-- occursOn/advanceRecurUntilCompletedChain, which operate on this same
+-- {occurrence_date, pending_reschedules} shape regardless of which table it
+-- lives on). Completing it resolves this row and inserts a new 'pending' one
+-- for the next cycle; atodo.tasks.due_date is never touched again after a
+-- recur_until_completed task's creation.
+CREATE TABLE IF NOT EXISTS atodo.occurrences (
+    account_id UUID NOT NULL REFERENCES atodo.accounts(id) ON DELETE CASCADE,
+    id TEXT NOT NULL,
+    task_id TEXT NOT NULL,
+    occurrence_date TEXT NOT NULL,
+    pending_reschedules TEXT[] NOT NULL DEFAULT '{}',
+    -- The occurrence's OUTCOME -- mutually exclusive, replaces the old
+    -- completions/markedFailed maps. Independent of `dismissed` below: an
+    -- occurrence can be 'completed' and still not yet dismissed (the
+    -- brief linger before it visually disappears), or 'pending' and
+    -- already dismissed (a genuinely missed occurrence swept off the list
+    -- without ever being resolved) -- these are two separate axes, not one.
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'completed', 'failed')),
+    resolved_at BIGINT,
+    -- Whether this occurrence is hidden from the list regardless of
+    -- status -- replaces the old `dismissed` map. Set immediately when
+    -- sweeping away old history (see markOccurrencesDismissedBefore,
+    -- autoDismissStaleCarriedOverOccurrences), or after a short linger once
+    -- `status` becomes 'completed'/'failed' (see scheduleDismissal) so the
+    -- checkmark is visible for a moment before the row disappears.
+    dismissed BOOLEAN NOT NULL DEFAULT FALSE,
+    manual BOOLEAN NOT NULL DEFAULT FALSE,
+    overrides JSONB,
+    comments JSONB NOT NULL DEFAULT '[]',
+    log JSONB NOT NULL DEFAULT '[]',
+    focused_seconds INTEGER NOT NULL DEFAULT 0,
+    timer_seconds INTEGER NOT NULL DEFAULT 0,
+    timer JSONB,
+    PRIMARY KEY (account_id, id),
+    UNIQUE (account_id, task_id, occurrence_date)
 );
 
 -- Mock Stripe Checkout sessions (see lib/atodo/stripe.js) -- payment always
