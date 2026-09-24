@@ -478,12 +478,16 @@ paths:
         Bulk replace, not a per-task/per-occurrence PATCH/POST -- the client
         already computes the full resulting `tasks`/`occurrences` locally
         for every mutation (adding a task, completing an occurrence,
-        splitting a recurring series, ...) before saving, so this mirrors
-        that instead of requiring a separate granular endpoint per mutation
-        kind. `id` is client-generated (see the `Task`/`Occurrence` schemas)
-        and must be unique within each array; the server doesn't invent or
-        reconcile ids. Both arrays are replaced atomically -- a save can
-        never land one without the other.
+        splitting a recurring series, rescheduling or deleting a recorded
+        occurrence, ...) before saving, so this mirrors that instead of
+        requiring a separate granular endpoint per mutation kind. `id` is
+        client-generated (see the `Task`/`Occurrence` schemas) and must be
+        unique within each array; the server doesn't invent or reconcile
+        ids. Both arrays are replaced atomically -- a save can never land
+        one without the other. A task or occurrence present in a previous
+        save but absent from this request's arrays is deleted -- there is no
+        separate delete endpoint; deletion is just omission from the next
+        full save, the same as every other part of the resulting state.
       requestBody:
         required: true
         content:
@@ -515,6 +519,15 @@ paths:
                     items: { $ref: "#/components/schemas/Occurrence" }
         "401":
           description: Missing/invalid bearer token.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: >-
+            A same-(taskId, occurrenceDate) collision within the submitted
+            `occurrences` array, or against a row the client's own
+            pre-check missed (e.g. a race with another device) --
+            `code: 'CONFLICT'`.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -957,21 +970,31 @@ components:
           type: string
           format: date
           description: >-
-            The canonical date this occurrence is/was for; immutable once
-            created. For a recurUntilCompleted task, the date it *first*
-            became due (see pendingReschedules for how its due date moves
-            while still pending).
+            The date this occurrence is/was recorded against. For a
+            recurUntilCompleted task, the date it *first* became due (see
+            pendingReschedules for how its due date moves while still
+            pending). Can change -- the client offers directly rescheduling
+            an already-recorded occurrence to a different date -- subject to
+            the (taskId, occurrenceDate) uniqueness PUT /tasks documents
+            below; the client is expected to pre-check for a collision
+            itself before saving, same as it already computes every other
+            part of the resulting state locally first.
         pendingReschedules:
           type: array
           items: { type: string, format: date }
           description: >-
-            recurUntilCompleted occurrences only -- every date this
-            occurrence has been auto-pushed to since occurrenceDate without
-            being resolved, still-live until the chain is finally resolved
-            (see Task.recurUntilCompleted). A recurUntilCompleted task keeps
-            at most one 'pending' Occurrence alive at a time; completing it
+            Two unrelated uses, never both meaningful on the same occurrence
+            at once. For a recurUntilCompleted occurrence: every date it's
+            been auto-pushed to since occurrenceDate without being resolved,
+            still-live until the chain is finally resolved (see
+            Task.recurUntilCompleted) -- a recurUntilCompleted task keeps at
+            most one 'pending' Occurrence alive at a time; completing it
             resolves this row and a new 'pending' Occurrence is created for
-            the next cycle.
+            the next cycle. For a plain task's occurrence: every date it's
+            been manually rescheduled away from (see occurrenceDate above)
+            -- excludes those dates from the client re-treating them as
+            fresh, unclaimed pattern-predicted occurrences once this one has
+            moved elsewhere.
         status:
           type: string
           enum: [pending, completed, failed]
