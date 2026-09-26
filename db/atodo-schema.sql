@@ -141,6 +141,9 @@ CREATE TABLE IF NOT EXISTS atodo.occurrences (
     dismissed BOOLEAN NOT NULL DEFAULT FALSE,
     manual BOOLEAN NOT NULL DEFAULT FALSE,
     overrides JSONB,
+    -- Free-text details specific to this one occurrence (the task's own
+    -- details apply to all of its occurrences alike) -- see Occurrence.details.
+    details TEXT,
     comments JSONB NOT NULL DEFAULT '[]',
     log JSONB NOT NULL DEFAULT '[]',
     focused_seconds INTEGER NOT NULL DEFAULT 0,
@@ -149,6 +152,10 @@ CREATE TABLE IF NOT EXISTS atodo.occurrences (
     PRIMARY KEY (account_id, id),
     UNIQUE (account_id, task_id, occurrence_date)
 );
+
+-- Same idempotent column-addition pattern as atodo.accounts'
+-- password_changed_at above -- reaches an already-deployed atodo.occurrences.
+ALTER TABLE atodo.occurrences ADD COLUMN IF NOT EXISTS details TEXT;
 
 -- Mock Stripe Checkout sessions (see lib/atodo/stripe.js) -- payment always
 -- "succeeds", so a session is already 'paid' by the time it's inserted; kept

@@ -40,6 +40,7 @@ function toOccurrence(row) {
   dismissed: row.dismissed,
   manual: row.manual,
   overrides: row.overrides,
+  details: row.details,
   comments: row.comments,
   log: row.log,
   focusedSeconds: row.focused_seconds,
@@ -139,8 +140,8 @@ router.put('/', asyncHandler(async (req, res) => {
    await client.query(
     `INSERT INTO atodo.occurrences (
       account_id, id, task_id, occurrence_date, pending_reschedules, status,
-      resolved_at, dismissed, manual, overrides, comments, log, focused_seconds, timer_seconds, timer
-     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+      resolved_at, dismissed, manual, overrides, details, comments, log, focused_seconds, timer_seconds, timer
+     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
      ON CONFLICT (account_id, id) DO UPDATE SET
       task_id = EXCLUDED.task_id,
       occurrence_date = EXCLUDED.occurrence_date,
@@ -150,6 +151,7 @@ router.put('/', asyncHandler(async (req, res) => {
       dismissed = EXCLUDED.dismissed,
       manual = EXCLUDED.manual,
       overrides = EXCLUDED.overrides,
+      details = EXCLUDED.details,
       comments = EXCLUDED.comments,
       log = EXCLUDED.log,
       focused_seconds = EXCLUDED.focused_seconds,
@@ -166,6 +168,7 @@ router.put('/', asyncHandler(async (req, res) => {
      occurrence.dismissed ?? false,
      occurrence.manual ?? false,
      occurrence.overrides ? JSON.stringify(occurrence.overrides) : null,
+     occurrence.details ?? null,
      JSON.stringify(occurrence.comments ?? []),
      JSON.stringify(occurrence.log ?? []),
      occurrence.focusedSeconds ?? 0,

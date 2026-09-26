@@ -873,7 +873,15 @@ components:
           description: dayMode "multi-day" only -- exact days of the month.
 
     Frequency:
-      description: See recurrence.js's own top-of-file comment for the full recurrence rules each shape implies.
+      description: >-
+        See recurrence.js's own top-of-file comment for the full recurrence
+        rules each shape implies. Every shape may also carry two optional
+        fields the client uses to keep a task's recorded past separate from
+        its current pattern (see Task): `startsOn` (date -- the pattern
+        produces nothing before it, while dueDate stays its phase anchor) and
+        `skipDates` (date[] -- individual dates the pattern would land on but
+        no longer produces, i.e. deleted occurrences). The backend stores the
+        object as-is.
       oneOf:
         - $ref: "#/components/schemas/FrequencyOnce"
         - $ref: "#/components/schemas/FrequencyDays"
@@ -933,11 +941,11 @@ components:
       type: object
       nullable: true
       description: >-
-        Per-occurrence field overrides for a "this occurrence only" edit
-        (the 'instance' edit scope) -- any field left out falls back to the
-        owning Task's own current value. Pattern-level fields
-        (frequency/recurUntilCompleted/endDate) are never overridden here;
-        those can only change via the 'all'/'following' edit scopes.
+        Deprecated -- no longer written by the client, and cleared on load:
+        a task's data now applies to all of its occurrences alike. Kept in
+        the schema only so older saved data still round-trips. Was:
+        per-occurrence field overrides for a "this occurrence only" edit --
+        any field left out falls back to the owning Task's own value.
       properties:
         name: { type: string }
         description: { type: string }
@@ -960,12 +968,7 @@ components:
         taskId:
           type: string
           description: >-
-            The logical task lineage this occurrence belongs to -- see
-            Task.taskId. Deliberately not a reference to any specific Task
-            record's own id: a "this and following" split forks a new Task
-            row for the pattern going forward, but every already-recorded
-            Occurrence stays correctly associated with the same taskId, with
-            nothing needing to be copied across the split.
+            The task this occurrence belongs to -- see Task.taskId.
         occurrenceDate:
           type: string
           format: date
@@ -1014,8 +1017,12 @@ components:
           description: Whether this occurrence is hidden from the list regardless of `status` -- see `status`'s own description.
         manual:
           type: boolean
-          description: True only for an occurrence added via "add one extra occurrence" on a date the task's own pattern doesn't otherwise predict.
+          description: True for an occurrence added on a date the task's own pattern doesn't otherwise produce -- "add one extra occurrence", or the resume date of a paused recurrence.
         overrides: { $ref: "#/components/schemas/OccurrenceOverrides" }
+        details:
+          type: string
+          nullable: true
+          description: Free-text details specific to this one occurrence -- unlike Task.details, which applies to all of a task's occurrences alike.
         comments:
           type: array
           items: { $ref: "#/components/schemas/Comment" }
@@ -1049,16 +1056,20 @@ components:
       properties:
         id:
           type: string
-          description: This specific record's id -- changes across a recurring-series split (see taskId).
+          description: This record's id. One record per task (see taskId).
         taskId:
           type: string
           description: >-
-            Stable across a recurring task's whole lineage, including every
-            fragment a "this occurrence"/"this and following" edit or delete
-            has ever split off from it (see id) -- this, not id, is "one
-            task" for any UI or limit that means the logical task a person
-            thinks of, not one specific record. Also what every Occurrence
-            belonging to this task lineage references (see Occurrence.taskId).
+            The task's identity, referenced by each of its Occurrences (see
+            Occurrence.taskId). A task is exactly one record: its data (name,
+            time, flags, ...), its *current* recurrence pattern (dueDate,
+            frequency, endDate, recurUntilCompleted -- there's no history of
+            earlier patterns), and its recorded Occurrences, which always
+            count as occurrences whatever the current pattern says. When the
+            pattern changes, every date the old one produced before today is
+            saved as an Occurrence first. Older data could hold several
+            records per taskId ("fragments" of a split recurring task); the
+            client merges those into one on load.
         seriesId:
           type: string
           description: Groups otherwise-unrelated tasks a person has manually merged into one series in the Manage Tasks modal -- independent of taskId.
@@ -1094,7 +1105,7 @@ components:
         frequency: { $ref: "#/components/schemas/Frequency" }
         createdAt:
           allOf: [{ $ref: "#/components/schemas/EpochMillis" }]
-          description: Of this taskId's lineage, not this specific record -- carried forward unchanged across every split fragment (see the free-tier task limits, which grandfather by this field).
+          description: When the task was first created (see the free-tier task limits, which grandfather by this field).
         log:
           type: array
           items: { $ref: "#/components/schemas/LogEntry" }
