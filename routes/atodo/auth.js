@@ -5,23 +5,20 @@ const asyncHandler = require('../../lib/asyncHandler');
 const rateLimiter = require('../../lib/rateLimiter');
 const requireAtodoAuth = require('../../lib/atodo/authenticate');
 const { hashPassword, verifyPassword } = require('../../lib/atodo/password');
-const { toUser, issueToken } = require('../../lib/atodo/token');
+const { toUser, issueToken, toPasswordVersion } = require('../../lib/atodo/token');
 const { enforceLifecycleDeletion } = require('../../lib/atodo/lifecycle');
 const sendEmail = require('../../lib/atodo/mailer');
+const jwt = require('../../lib/atodo/jwt');
+const { buildFrontendLink } = require('../../lib/atodo/links');
 
 const router = express.Router();
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-// The frontend's own reachable base URL (see platform-integration/
-// config.template) -- deployment-configured, not client-supplied, so a
-// registration request can't point the emailed link at an arbitrary
-// attacker-controlled domain. handleEmailVerificationLink() in the atodo
-// client reads a `verify` query param off exactly this URL.
+// handleEmailVerificationLink() in the atodo client reads this `verify`
+// param -- see lib/atodo/links.js.
 function buildVerificationLink(token) {
- const link = new URL(process.env.ATODO_FRONTEND_BASE_URL);
- link.searchParams.set('verify', token);
- return link.toString();
+ return buildFrontendLink('verify', token);
 }
 
 // register/login are public and credential-guessing/spam-sensitive, same
@@ -101,6 +98,133 @@ router.post('/verify-email', asyncHandler(async (req, res) => {
  );
 
  res.status(200).json({ email: pending.email });
+}));
+
+// ---------------------------------------------------------------------------
+// Login-email changes (started by POST /users/me/change-email) -- all three
+// public, since each is reached from an emailed link rather than a session.
+// ---------------------------------------------------------------------------
+
+const PASSWORD_RESET_TTL_SECONDS = 60 * 60;
+const invalidLink = (res) =>
+ res.status(400).json({ code: 'INVALID_TOKEN', message: 'That link is invalid, has expired, or has already been used.' });
+const emailTaken = (res) => res.status(409).json({ code: 'EMAIL_TAKEN', message: 'An account with that email already exists.' });
+const clearPendingEmailChange = (accountId) =>
+ db.query(
+  'UPDATE atodo.accounts SET pending_email = NULL, pending_email_token = NULL, pending_email_expires_at = NULL WHERE id = $1',
+  [accountId]
+ );
+
+// The link emailed to the NEW address: makes it the login email right away.
+router.post('/verify-email-change', rateLimiter.strict, asyncHandler(async (req, res) => {
+ const { token } = req.body || {};
+ if (typeof token !== 'string' || !token) {
+  return res.status(400).json({ code: 'INVALID_TOKEN', message: 'That verification link is invalid or has already been used.' });
+ }
+ const { rows } = await db.query('SELECT * FROM atodo.accounts WHERE pending_email_token = $1', [token]);
+ if (rows.length === 0) {
+  return res.status(400).json({ code: 'INVALID_TOKEN', message: 'That verification link is invalid or has already been used.' });
+ }
+ const account = rows[0];
+ if (new Date(account.pending_email_expires_at).getTime() < Date.now()) {
+  await clearPendingEmailChange(account.id);
+  return res.status(410).json({ code: 'EXPIRED', message: 'That verification link has expired. Please request the change again.' });
+ }
+
+ const newEmail = account.pending_email;
+ const { rows: taken } = await db.query('SELECT 1 FROM atodo.accounts WHERE email = $1 AND id <> $2', [newEmail, account.id]);
+ if (taken.length > 0) {
+  await clearPendingEmailChange(account.id);
+  return emailTaken(res);
+ }
+ try {
+  await db.query(
+   `UPDATE atodo.accounts SET email = pending_email, pending_email = NULL, pending_email_token = NULL, pending_email_expires_at = NULL
+    WHERE id = $1`,
+   [account.id]
+  );
+ } catch (err) {
+  if (err.code === '23505') return emailTaken(res); // unique email -- taken between the check above and here
+  throw err;
+ }
+ // Whoever just proved they own this inbox wins it over a stale, unverified
+ // registration of the same address.
+ await db.query('DELETE FROM atodo.pending_registrations WHERE email = $1', [newEmail]);
+
+ res.json({ email: newEmail });
+}));
+
+// The link emailed to the OLD address. See atodo-api-spec.yaml: restores it,
+// cancels any pending change, ends every session, and hands back a
+// short-lived password-reset token (bound to the new password version, so
+// single-use).
+router.post('/undo-email-change', rateLimiter.strict, asyncHandler(async (req, res) => {
+ const payload = jwt.verify((req.body || {}).token);
+ if (!payload || payload.purpose !== 'email-change-undo' || !payload.acct) return invalidLink(res);
+
+ const { rows } = await db.query('SELECT * FROM atodo.accounts WHERE id = $1', [payload.acct]);
+ if (rows.length === 0) return invalidLink(res);
+ const account = rows[0];
+ // Only the latest change request's link, and only once -- an undo (or a
+ // newer request) moves email_change_requested_at on.
+ const requestedAt = account.email_change_requested_at ? new Date(account.email_change_requested_at).getTime() : null;
+ if (requestedAt !== payload.req) return invalidLink(res);
+
+ if (account.email !== payload.oldEmail) {
+  const { rows: taken } = await db.query('SELECT 1 FROM atodo.accounts WHERE email = $1 AND id <> $2', [payload.oldEmail, account.id]);
+  if (taken.length > 0) return emailTaken(res);
+ }
+ let restored;
+ try {
+  ({ rows: [restored] } = await db.query(
+   `UPDATE atodo.accounts SET
+     email = $1,
+     pending_email = NULL, pending_email_token = NULL, pending_email_expires_at = NULL,
+     email_change_requested_at = NULL,
+     password_changed_at = now()
+    WHERE id = $2 RETURNING *`,
+   [payload.oldEmail, account.id]
+  ));
+ } catch (err) {
+  if (err.code === '23505') return emailTaken(res);
+  throw err;
+ }
+
+ const resetToken = jwt.sign({ purpose: 'password-reset', acct: account.id, pwv: toPasswordVersion(restored) }, PASSWORD_RESET_TTL_SECONDS);
+ sendEmail(
+  payload.oldEmail,
+  'Your A-To-Do login email change was undone',
+  `Your A-To-Do login email is ${payload.oldEmail} again, and every session has been signed out.\n\n`
+  + `If you didn't finish setting a new password right after undoing the change, do it now -- `
+  + `whoever changed your email may know your current one.`,
+  `<p>Your A-To-Do login email is ${payload.oldEmail} again, and every session has been signed out.</p>`
+  + `<p>If you didn't finish setting a new password right after undoing the change, do it now -- `
+  + `whoever changed your email may know your current one.</p>`
+ );
+
+ res.json({ email: payload.oldEmail, resetToken });
+}));
+
+// Sets a new password with the reset token /undo-email-change handed out --
+// no current password needed, which is the point. Logs this session in.
+router.post('/reset-password', rateLimiter.strict, asyncHandler(async (req, res) => {
+ const { resetToken, newPassword } = req.body || {};
+ const payload = jwt.verify(resetToken);
+ if (!payload || payload.purpose !== 'password-reset' || !payload.acct) return invalidLink(res);
+ if (typeof newPassword !== 'string' || newPassword.length < 8) {
+  return res.status(400).json({ code: 'INVALID_PASSWORD', message: 'Password must be at least 8 characters.' });
+ }
+ const { rows } = await db.query('SELECT * FROM atodo.accounts WHERE id = $1', [payload.acct]);
+ // Bound to the password version it was issued for -- used once, it no
+ // longer matches.
+ if (rows.length === 0 || toPasswordVersion(rows[0]) !== payload.pwv) return invalidLink(res);
+
+ const { rows: updated } = await db.query(
+  `UPDATE atodo.accounts SET password_hash = $1, password_changed_at = now(), last_login_at = now(), last_active_at = now()
+   WHERE id = $2 RETURNING *`,
+  [hashPassword(newPassword), payload.acct]
+ );
+ res.json({ token: issueToken(updated[0]), user: toUser(updated[0]) });
 }));
 
 router.post('/login', rateLimiter.strict, asyncHandler(async (req, res) => {

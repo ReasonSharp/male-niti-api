@@ -40,6 +40,15 @@ CREATE TABLE IF NOT EXISTS atodo.accounts (
     -- First day of the week, 0=Sunday..6=Saturday; NULL = never chosen (the
     -- client then follows the language).
     week_start SMALLINT CHECK (week_start BETWEEN 0 AND 6),
+    -- A login-email change awaiting verification (POST /users/me/change-email):
+    -- the new address, its single-use verification token and when that
+    -- expires. email_change_requested_at identifies the latest request --
+    -- the undo link's signed token embeds it, so only the latest request's
+    -- undo link works, and only once (an undo clears it).
+    pending_email TEXT,
+    pending_email_token TEXT UNIQUE,
+    pending_email_expires_at TIMESTAMPTZ,
+    email_change_requested_at TIMESTAMPTZ,
     active_task_id TEXT,
     active_occurrence_date TEXT,
     todo_view_mode TEXT NOT NULL DEFAULT 'pending' CHECK (todo_view_mode IN ('pending', 'next-recurrence', 'all')),
@@ -67,6 +76,10 @@ CREATE TABLE IF NOT EXISTS atodo.accounts (
 ALTER TABLE atodo.accounts ADD COLUMN IF NOT EXISTS password_changed_at TIMESTAMPTZ;
 ALTER TABLE atodo.accounts ADD COLUMN IF NOT EXISTS theme TEXT NOT NULL DEFAULT 'dark' CHECK (theme IN ('dark', 'light'));
 ALTER TABLE atodo.accounts ADD COLUMN IF NOT EXISTS week_start SMALLINT CHECK (week_start BETWEEN 0 AND 6);
+ALTER TABLE atodo.accounts ADD COLUMN IF NOT EXISTS pending_email TEXT;
+ALTER TABLE atodo.accounts ADD COLUMN IF NOT EXISTS pending_email_token TEXT UNIQUE;
+ALTER TABLE atodo.accounts ADD COLUMN IF NOT EXISTS pending_email_expires_at TIMESTAMPTZ;
+ALTER TABLE atodo.accounts ADD COLUMN IF NOT EXISTS email_change_requested_at TIMESTAMPTZ;
 
 -- One account's recurrence PATTERNS, bulk-replaced by PUT /atodo/v1/tasks.
 -- id is client-generated (see api-spec.yaml's Task schema). Date-only fields

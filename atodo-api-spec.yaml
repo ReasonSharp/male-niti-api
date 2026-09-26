@@ -143,6 +143,141 @@ paths:
               schema: { $ref: "#/components/schemas/Error" }
               example: { code: EXPIRED, message: "That verification link has expired. Please register again." }
 
+  /auth/verify-email-change:
+    post:
+      tags: [Auth]
+      summary: Consume a login-email change's verification link
+      description: >-
+        The link emailed to the NEW address by `POST /users/me/change-email`
+        (valid 6 hours, same as registration's). Makes the new address the
+        account's login email immediately; the old one stops working for
+        login. Single-use, like `/auth/verify-email`. Doesn't end any
+        session -- the bearer token doesn't embed the email.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token: { type: string }
+      responses:
+        "200":
+          description: Verified -- `email` is now the login email.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  email: { type: string, format: email }
+        "400":
+          description: The token doesn't match any pending change (already used, cancelled by a newer change or an undo, or never existed).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              example: { code: INVALID_TOKEN, message: "That verification link is invalid or has already been used." }
+        "409":
+          description: Another account has taken that address in the meantime -- the pending change is cancelled.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              example: { code: EMAIL_TAKEN, message: "An account with that email already exists." }
+        "410":
+          description: The 6-hour validity window has passed -- the pending change is cancelled.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              example: { code: EXPIRED, message: "That verification link has expired. Please request the change again." }
+
+  /auth/undo-email-change:
+    post:
+      tags: [Auth]
+      summary: Undo a login-email change from the link sent to the OLD address
+      description: >-
+        `token` is the signed token (same HS256 format as a bearer token,
+        but with `purpose: email-change-undo` and no `sub`, so it can never
+        authenticate a request) embedded in the link `POST
+        /users/me/change-email` emails to the old address -- it carries the
+        account id, both addresses and when the change was requested, and
+        is valid for 30 days. Restores the old address as the login email
+        (whether or not the new one was already verified), cancels any
+        pending change, and -- since an unwanted change suggests someone
+        else knows the password -- ends every session and returns a
+        short-lived (1 hour), single-use `resetToken` for
+        `POST /auth/reset-password`, so the owner can set a new password
+        without knowing the current one. Only honored for the account's
+        most recent change request, and only once.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token: { type: string }
+      responses:
+        "200":
+          description: Undone.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  email: { type: string, format: email, description: The restored login email. }
+                  resetToken: { type: string }
+        "400":
+          description: Invalid, expired, already used, or superseded by a newer change request.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              example: { code: INVALID_TOKEN, message: "That link is invalid, has expired, or has already been used." }
+        "409":
+          description: The old address belongs to another account by now, so it can't be restored.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              example: { code: EMAIL_TAKEN, message: "An account with that email already exists." }
+
+  /auth/reset-password:
+    post:
+      tags: [Auth]
+      summary: Set a new password with a reset token
+      description: >-
+        `resetToken` comes from `POST /auth/undo-email-change`. Single-use
+        (it's bound to the password version it was issued for). Ends every
+        other session, like `POST /users/me/change-password`, and logs this
+        one in.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [resetToken, newPassword]
+              properties:
+                resetToken: { type: string }
+                newPassword: { type: string, format: password, minLength: 8 }
+      responses:
+        "200":
+          description: Changed, and logged in.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token: { $ref: "#/components/schemas/Token" }
+                  user: { $ref: "#/components/schemas/User" }
+        "400":
+          description: newPassword is under 8 characters (INVALID_PASSWORD), or resetToken is invalid/expired/already used (INVALID_TOKEN).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /auth/login:
     post:
       tags: [Auth]
@@ -375,6 +510,52 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
               example: { code: INVALID_CREDENTIALS, message: "Incorrect current password." }
+
+  /users/me/change-email:
+    post:
+      tags: [Users]
+      summary: Start changing the account's login email
+      description: >-
+        Requires the current password, like `change-password`. Doesn't
+        change the login email yet: the NEW address gets a verification
+        link (6 hours, see `POST /auth/verify-email-change`), and the OLD
+        address gets a notice with an undo link (30 days, see `POST
+        /auth/undo-email-change`). Until the new address is verified, the old
+        one keeps working for login; a newer request replaces a pending one
+        (and invalidates the older undo link).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [newEmail, currentPassword]
+              properties:
+                newEmail: { type: string, format: email }
+                currentPassword: { type: string, format: password }
+      responses:
+        "200":
+          description: Requested -- the returned User carries `pendingEmail`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "400":
+          description: newEmail isn't a valid address (INVALID_EMAIL), or is already this account's email (SAME_EMAIL).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: Missing/invalid bearer token, or currentPassword doesn't match.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              example: { code: INVALID_CREDENTIALS, message: "Incorrect current password." }
+        "409":
+          description: Another account (or a pending registration) already uses newEmail.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              example: { code: EMAIL_TAKEN, message: "An account with that email already exists." }
 
   /users/me/schedule-deletion:
     post:
@@ -777,6 +958,11 @@ components:
       properties:
         id: { type: string }
         email: { type: string, format: email }
+        pendingEmail:
+          type: string
+          format: email
+          nullable: true
+          description: An address a login-email change is waiting to have verified (see POST /users/me/change-email), or null.
         nickname: { type: string }
         avatar:
           type: string
