@@ -251,7 +251,7 @@ paths:
       description: >-
         Partial update -- send only the fields you're changing. Covers
         everything Settings can change (nickname, avatar, time format,
-        background, language, theme) plus the small bits of session state the
+        background, language, theme, first day of the week) plus the small bits of session state the
         client persists across reloads (which task is currently
         active/focused, and the to-do list's current view mode). None of
         this affects the bearer token's own claims, so the token stays
@@ -279,6 +279,11 @@ paths:
                 theme:
                   type: string
                   enum: [dark, light]
+                weekStart:
+                  type: integer
+                  minimum: 0
+                  maximum: 6
+                  nullable: true
                 activeTaskId:
                   type: string
                   nullable: true
@@ -788,6 +793,12 @@ components:
           type: string
           enum: [dark, light]
           description: Always a real value -- unlike language, there's no auto-detection step; defaults to dark for a brand new account.
+        weekStart:
+          type: integer
+          minimum: 0
+          maximum: 6
+          nullable: true
+          description: First day of the week for calendars and weekday lists, 0=Sunday..6=Saturday. null means never chosen -- the client then follows the language (Monday for hr, Sunday for en).
         activeTaskId:
           type: string
           nullable: true

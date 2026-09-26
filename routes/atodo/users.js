@@ -16,6 +16,8 @@ const FIELD_COLUMNS = {
  timeFormat: 'time_format',
  background: 'background',
  language: 'language',
+ theme: 'theme',
+ weekStart: 'week_start',
  activeTaskId: 'active_task_id',
  activeOccurrenceDate: 'active_occurrence_date',
  todoViewMode: 'todo_view_mode',

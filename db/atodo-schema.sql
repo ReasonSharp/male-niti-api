@@ -36,6 +36,10 @@ CREATE TABLE IF NOT EXISTS atodo.accounts (
     time_format TEXT NOT NULL DEFAULT '24' CHECK (time_format IN ('12', '24')),
     background JSONB,
     language TEXT CHECK (language IN ('en', 'hr')),
+    theme TEXT NOT NULL DEFAULT 'dark' CHECK (theme IN ('dark', 'light')),
+    -- First day of the week, 0=Sunday..6=Saturday; NULL = never chosen (the
+    -- client then follows the language).
+    week_start SMALLINT CHECK (week_start BETWEEN 0 AND 6),
     active_task_id TEXT,
     active_occurrence_date TEXT,
     todo_view_mode TEXT NOT NULL DEFAULT 'pending' CHECK (todo_view_mode IN ('pending', 'next-recurrence', 'all')),
@@ -61,6 +65,8 @@ CREATE TABLE IF NOT EXISTS atodo.accounts (
 -- password_changed_at is added separately, idempotently, to actually reach
 -- existing deployments when this file is re-applied.
 ALTER TABLE atodo.accounts ADD COLUMN IF NOT EXISTS password_changed_at TIMESTAMPTZ;
+ALTER TABLE atodo.accounts ADD COLUMN IF NOT EXISTS theme TEXT NOT NULL DEFAULT 'dark' CHECK (theme IN ('dark', 'light'));
+ALTER TABLE atodo.accounts ADD COLUMN IF NOT EXISTS week_start SMALLINT CHECK (week_start BETWEEN 0 AND 6);
 
 -- One account's recurrence PATTERNS, bulk-replaced by PUT /atodo/v1/tasks.
 -- id is client-generated (see api-spec.yaml's Task schema). Date-only fields
