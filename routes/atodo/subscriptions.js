@@ -3,30 +3,15 @@ const crypto = require('crypto');
 const db = require('../../db');
 const asyncHandler = require('../../lib/asyncHandler');
 const { toUser, issueToken } = require('../../lib/atodo/token');
-const createMockCheckoutSession = require('../../lib/atodo/stripe');
+const { getStripe, priceFor } = require('../../lib/atodo/stripe');
+const { paymentsStatus } = require('../../lib/atodo/payments');
+const { confirmCheckoutSession } = require('../../lib/atodo/billing');
 
 const router = express.Router();
 
 // Mounted at /atodo/v1/subscriptions behind requireAtodoAuth (see routes/atodo/index.js).
 
 const TRIAL_DURATION_MS = 14 * 24 * 60 * 60 * 1000;
-const BILLING_DURATION_MS = { monthly: 30 * 24 * 60 * 60 * 1000, annual: 365 * 24 * 60 * 60 * 1000 };
-
-async function activateProSubscription(accountId, billingInterval) {
- const now = new Date();
- const expiresAt = new Date(now.getTime() + BILLING_DURATION_MS[billingInterval]);
-
- const { rows } = await db.query(
-  `UPDATE atodo.accounts SET
-    subscription_id = $1, subscription_plan = 'pro', subscription_billing_interval = $2,
-    subscription_started_at = $3, subscription_expires_at = $4,
-    subscription_cancel_at_period_end = false, subscription_scheduled_deletion = false
-   WHERE id = $5 RETURNING *`,
-  [crypto.randomUUID(), billingInterval, now, expiresAt, accountId]
- );
- return rows[0];
-}
-
 router.post('/trial', asyncHandler(async (req, res) => {
  // Currently allows repeat trials (useful for testing) -- see api-spec.yaml.
  const now = new Date();
@@ -45,37 +30,82 @@ router.post('/trial', asyncHandler(async (req, res) => {
  res.json({ token: issueToken(rows[0]), user: toUser(rows[0]) });
 }));
 
+// A real Stripe Checkout Session in subscription mode (recurring monthly or
+// yearly price). Nothing is activated here: the subscription starts when
+// Stripe reports the payment (webhook, or the status poll's fallback -- see
+// lib/atodo/billing.js), which is also when its receipt gets fiscalized.
+//
+// Refused outright -- before anything is created in Stripe -- unless payments
+// are possible at all, i.e. Stripe is configured AND fiscalization has a
+// usable certificate: no payment may be taken that can't be fiscalized.
 router.post('/checkout-sessions', asyncHandler(async (req, res) => {
  const { billingInterval, successUrl, cancelUrl } = req.body || {};
  if (!['monthly', 'annual'].includes(billingInterval) || typeof successUrl !== 'string' || typeof cancelUrl !== 'string') {
   return res.status(400).send('billingInterval, successUrl and cancelUrl are required');
  }
+ const status = paymentsStatus();
+ if (!status.ok) {
+  console.error(`[atodo billing] checkout refused: ${status.reason}`);
+  return res.status(503).json({ code: 'PAYMENTS_UNAVAILABLE', message: 'Payments are temporarily unavailable.' });
+ }
 
- const session = await createMockCheckoutSession({ successUrl });
+ const { rows } = await db.query('SELECT * FROM atodo.accounts WHERE id = $1', [req.atodoAuth.id]);
+ if (rows.length === 0) return res.status(401).json({ code: 'UNAUTHENTICATED', message: 'Missing or invalid bearer token.' });
+ const account = rows[0];
+ const hasActivePro = account.subscription_plan === 'pro'
+  && account.stripe_subscription_id
+  && new Date(account.subscription_expires_at).getTime() > Date.now()
+  && !account.subscription_cancel_at_period_end;
+ if (hasActivePro) {
+  return res.status(409).json({ code: 'ALREADY_SUBSCRIBED', message: 'This account already has an active subscription.' });
+ }
+
+ const stripe = getStripe();
+ let customerId = account.stripe_customer_id;
+ if (!customerId) {
+  const customer = await stripe.customers.create({ email: account.email, metadata: { accountId: account.id } });
+  customerId = customer.id;
+  await db.query('UPDATE atodo.accounts SET stripe_customer_id = $1 WHERE id = $2', [customerId, account.id]);
+ }
+
+ const session = await stripe.checkout.sessions.create({
+  mode: 'subscription',
+  customer: customerId,
+  client_reference_id: account.id,
+  line_items: [{ price: priceFor(billingInterval), quantity: 1 }],
+  subscription_data: { metadata: { accountId: account.id } },
+  // successUrl carries Stripe's own {CHECKOUT_SESSION_ID} placeholder (see
+  // the client's checkout.js), which it fills in on the way back.
+  success_url: successUrl,
+  cancel_url: cancelUrl,
+ });
 
  await db.query(
   `INSERT INTO atodo.checkout_sessions (id, account_id, billing_interval, status, success_url, cancel_url)
-   VALUES ($1, $2, $3, 'paid', $4, $5)`,
-  [session.sessionId, req.atodoAuth.id, billingInterval, successUrl, cancelUrl]
+   VALUES ($1, $2, $3, 'pending', $4, $5)`,
+  [session.id, account.id, billingInterval, successUrl, cancelUrl]
  );
 
- // Mock Stripe: payment always "succeeds", so the subscription is activated
- // right away instead of waiting on a webhook that will never arrive.
- await activateProSubscription(req.atodoAuth.id, billingInterval);
-
- res.json({ sessionId: session.sessionId, checkoutUrl: session.checkoutUrl });
+ res.json({ sessionId: session.id, checkoutUrl: session.url });
 }));
 
 router.get('/checkout-sessions/:sessionId', asyncHandler(async (req, res) => {
- const { rows } = await db.query(
-  'SELECT * FROM atodo.checkout_sessions WHERE id = $1 AND account_id = $2',
-  [req.params.sessionId, req.atodoAuth.id]
- );
- if (rows.length === 0) return res.status(404).json({ code: 'NOT_FOUND', message: 'No such checkout session.' });
+ const load = async () =>
+  (await db.query('SELECT * FROM atodo.checkout_sessions WHERE id = $1 AND account_id = $2', [req.params.sessionId, req.atodoAuth.id])).rows[0];
+ let session = await load();
+ if (!session) return res.status(404).json({ code: 'NOT_FOUND', message: 'No such checkout session.' });
 
- const session = rows[0];
+ // Webhook not here yet? Ask Stripe directly (see confirmCheckoutSession).
+ if (session.status === 'pending' && getStripe()) {
+  try {
+   await confirmCheckoutSession(session.id);
+   session = await load();
+  } catch (err) {
+   console.error(`[atodo billing] checking checkout session ${session.id} failed: ${err.message}`);
+  }
+ }
+
  const body = { status: session.status };
-
  if (session.status === 'paid') {
   const { rows: accountRows } = await db.query('SELECT * FROM atodo.accounts WHERE id = $1', [req.atodoAuth.id]);
   if (accountRows.length > 0) {
@@ -98,6 +128,12 @@ router.post('/cancel', asyncHandler(async (req, res) => {
 
  if (!hasActiveSubscription) {
   return res.status(409).json({ code: 'NO_ACTIVE_SUBSCRIPTION', message: "There's no active subscription to cancel." });
+ }
+
+ // A paid subscription stops renewing in Stripe itself -- the account keeps
+ // Pro until the period it already paid for ends.
+ if (account.stripe_subscription_id && getStripe()) {
+  await getStripe().subscriptions.update(account.stripe_subscription_id, { cancel_at_period_end: true });
  }
 
  const { rows: updated } = await db.query(

@@ -49,6 +49,10 @@ CREATE TABLE IF NOT EXISTS atodo.accounts (
     pending_email_token TEXT UNIQUE,
     pending_email_expires_at TIMESTAMPTZ,
     email_change_requested_at TIMESTAMPTZ,
+    -- The Stripe customer this account pays as, and its current Stripe
+    -- subscription (if any) -- see lib/atodo/billing.js.
+    stripe_customer_id TEXT UNIQUE,
+    stripe_subscription_id TEXT,
     active_task_id TEXT,
     active_occurrence_date TEXT,
     todo_view_mode TEXT NOT NULL DEFAULT 'pending' CHECK (todo_view_mode IN ('pending', 'next-recurrence', 'all')),
@@ -80,6 +84,8 @@ ALTER TABLE atodo.accounts ADD COLUMN IF NOT EXISTS pending_email TEXT;
 ALTER TABLE atodo.accounts ADD COLUMN IF NOT EXISTS pending_email_token TEXT UNIQUE;
 ALTER TABLE atodo.accounts ADD COLUMN IF NOT EXISTS pending_email_expires_at TIMESTAMPTZ;
 ALTER TABLE atodo.accounts ADD COLUMN IF NOT EXISTS email_change_requested_at TIMESTAMPTZ;
+ALTER TABLE atodo.accounts ADD COLUMN IF NOT EXISTS stripe_customer_id TEXT UNIQUE;
+ALTER TABLE atodo.accounts ADD COLUMN IF NOT EXISTS stripe_subscription_id TEXT;
 
 -- One account's recurrence PATTERNS, bulk-replaced by PUT /atodo/v1/tasks.
 -- id is client-generated (see api-spec.yaml's Task schema). Date-only fields
@@ -189,4 +195,35 @@ CREATE TABLE IF NOT EXISTS atodo.checkout_sessions (
     success_url TEXT NOT NULL,
     cancel_url TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Fiscalized B2C receipts (Croatian "fiskalizacija", see lib/atodo/fiscal/),
+-- one per paid Stripe invoice. Receipt numbers run sequentially per payment
+-- device within each calendar year (OznSlijed 'N'), allocated under an
+-- advisory lock so there are no gaps or duplicates. `zki` (the issuer's
+-- security code) is fixed at issue time; `jir` arrives from the Tax
+-- Administration -- until it does, status stays 'pending' and the receipt is
+-- re-sent as a late delivery (NakDost) by receipts.js's retry loop.
+-- Receipts are legal records to be retained, so deleting the account only
+-- detaches them (account_id SET NULL) and customer_email keeps who they were for.
+CREATE TABLE IF NOT EXISTS atodo.fiscal_receipts (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    account_id UUID REFERENCES atodo.accounts(id) ON DELETE SET NULL,
+    customer_email TEXT NOT NULL,
+    stripe_invoice_id TEXT UNIQUE NOT NULL,
+    year SMALLINT NOT NULL,
+    number INTEGER NOT NULL,
+    premises TEXT NOT NULL,
+    device TEXT NOT NULL,
+    issued_at TIMESTAMPTZ NOT NULL,
+    description TEXT NOT NULL,
+    total_cents INTEGER NOT NULL,
+    zki TEXT NOT NULL,
+    jir TEXT,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'fiscalized')),
+    attempts INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT,
+    last_attempt_at TIMESTAMPTZ,
+    emailed_at TIMESTAMPTZ,
+    UNIQUE (premises, device, year, number)
 );

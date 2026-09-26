@@ -755,7 +755,13 @@ paths:
         or abandons payment on Stripe's own hosted page; the client polls
         `GET /subscriptions/checkout-sessions/{sessionId}` (from
         `checkout.html`, the intermediate page shown while waiting) to find
-        out which.
+        out which. The session is a recurring (auto-renewing) subscription;
+        nothing is activated here -- the subscription starts once Stripe
+        reports the payment (`POST /stripe/webhook`), which is also when the
+        payment's receipt is fiscalized (Croatian B2C fiscalization) and
+        emailed. Refused with 503 `PAYMENTS_UNAVAILABLE` before anything is
+        created in Stripe whenever payments can't be fiscalized (no usable
+        fiscalization certificate) or Stripe isn't configured.
       requestBody:
         required: true
         content:
@@ -793,6 +799,38 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: The account already has an active, renewing Pro subscription.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              example: { code: ALREADY_SUBSCRIBED, message: "This account already has an active subscription." }
+        "503":
+          description: Payments are unavailable (not configured, or fiscalization has no usable certificate) -- nothing was created in Stripe.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              example: { code: PAYMENTS_UNAVAILABLE, message: "Payments are temporarily unavailable." }
+
+  /stripe/webhook:
+    post:
+      tags: [Subscriptions]
+      summary: Stripe event deliveries
+      description: >-
+        Called by Stripe, not the client; authenticated by the
+        `Stripe-Signature` header (the endpoint's signing secret), not a
+        bearer token. Handles checkout.session.completed/expired,
+        invoice.paid (every payment, first and renewals: extends the
+        subscription and issues a fiscalized receipt) and
+        customer.subscription.updated/deleted. Idempotent. Answers 5xx when
+        an event can't be processed yet (e.g. a payment arriving while
+        fiscalization is unavailable), so Stripe re-delivers it later.
+      security: []
+      responses:
+        "200":
+          description: Processed (or not an event type this API acts on).
+        "400":
+          description: Missing or invalid signature.
 
   /subscriptions/checkout-sessions/{sessionId}:
     get:

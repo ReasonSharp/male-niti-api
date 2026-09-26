@@ -26,6 +26,9 @@ const feedRouter = require('./routes/feed');
 const atodoRouter = require('./routes/atodo');
 const atodoDocsRouter = require('./routes/atodo/docs');
 const atodoCors = require('./lib/atodo/cors');
+const atodoStripeWebhook = require('./routes/atodo/stripeWebhook');
+const { paymentsStatus, getFiscalConfig } = require('./lib/atodo/payments');
+const { startReceiptRetries } = require('./lib/atodo/fiscal/receipts');
 
 const app = express();
 const port = 50000;
@@ -36,6 +39,8 @@ app.set('trust proxy', process.env.TRUST_PROXY || 1);
 
 app.use(requestLogger);
 app.use(checkBanned);
+// Before express.json(): Stripe's signature check needs the raw body.
+app.post('/atodo/v1/stripe/webhook', atodoCors, express.raw({ type: 'application/json' }), atodoStripeWebhook);
 app.use(express.json());
 app.use(authenticate);
 app.use(rateLimiter.general);
@@ -52,6 +57,12 @@ app.use('/imprint', imprintRouter);
 app.use('/feed.xml', feedRouter);
 app.use('/atodo/v1/api-docs', atodoCors, atodoDocsRouter);
 app.use('/atodo/v1', atodoCors, atodoRouter);
+
+// Payments need Stripe AND fiscalization -- say plainly at startup whether
+// they're on, and keep re-sending any receipt still waiting for its JIR.
+const payments = paymentsStatus();
+console.log(payments.ok ? '[atodo billing] payments enabled' : `[atodo billing] payments DISABLED: ${payments.reason}`);
+if (getFiscalConfig()) startReceiptRetries(getFiscalConfig());
 
 app.listen(port, () => {
  console.log(`Server is running on port ${port}`);

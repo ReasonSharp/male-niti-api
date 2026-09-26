@@ -8,6 +8,7 @@ const rateLimiter = require('../../lib/rateLimiter');
 const jwt = require('../../lib/atodo/jwt');
 const sendEmail = require('../../lib/atodo/mailer');
 const { buildFrontendLink } = require('../../lib/atodo/links');
+const { getStripe } = require('../../lib/atodo/stripe');
 const { renderEmail } = require('../../lib/atodo/emailTemplate');
 
 // Same check as routes/atodo/auth.js's registration.
@@ -164,6 +165,15 @@ router.post('/me/change-email', rateLimiter.strict, asyncHandler(async (req, res
 }));
 
 router.delete('/me', asyncHandler(async (req, res) => {
+ // A deleted account must not keep being charged: its Stripe subscription
+ // ends right away (no refund for the rest of the period). If that fails the
+ // deletion fails too, rather than leave a subscription billing nobody.
+ const { rows } = await db.query('SELECT stripe_subscription_id FROM atodo.accounts WHERE id = $1', [req.atodoAuth.id]);
+ const subscriptionId = rows.length ? rows[0].stripe_subscription_id : null;
+ if (subscriptionId && getStripe()) {
+  const sub = await getStripe().subscriptions.retrieve(subscriptionId);
+  if (!['canceled', 'incomplete_expired'].includes(sub.status)) await getStripe().subscriptions.cancel(subscriptionId);
+ }
  await db.query('DELETE FROM atodo.accounts WHERE id = $1', [req.atodoAuth.id]);
  res.status(204).send();
 }));
@@ -179,6 +189,11 @@ router.post('/me/schedule-deletion', asyncHandler(async (req, res) => {
 
  if (!hasActiveSubscription) {
   return res.status(409).json({ code: 'NO_ACTIVE_SUBSCRIPTION', message: "There's no active subscription to schedule deletion for." });
+ }
+
+ // Deletion at period end means no renewal either.
+ if (account.stripe_subscription_id && getStripe()) {
+  await getStripe().subscriptions.update(account.stripe_subscription_id, { cancel_at_period_end: true });
  }
 
  const { rows: updated } = await db.query(
