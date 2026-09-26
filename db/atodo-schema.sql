@@ -197,6 +197,14 @@ CREATE TABLE IF NOT EXISTS atodo.checkout_sessions (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Closed (deleted) accounts, kept for a year with only their email,
+-- password hash and trial status -- see lib/atodo/closedAccounts.js.
+-- trial_ineligible: the account (or the one closed before it) has had a
+-- trial or subscription, so no new free trial even with subscription_plan
+-- back to NULL.
+ALTER TABLE atodo.accounts ADD COLUMN IF NOT EXISTS closed_at TIMESTAMPTZ;
+ALTER TABLE atodo.accounts ADD COLUMN IF NOT EXISTS trial_ineligible BOOLEAN NOT NULL DEFAULT false;
+
 -- Fiscalized B2C receipts (Croatian "fiskalizacija", see lib/atodo/fiscal/),
 -- one per paid Stripe invoice. Receipt numbers run sequentially per payment
 -- device within each calendar year (OznSlijed 'N'), allocated under an
@@ -227,9 +235,14 @@ CREATE TABLE IF NOT EXISTS atodo.fiscal_receipts (
     emailed_at TIMESTAMPTZ,
     UNIQUE (premises, device, year, number)
 );
+-- Kept intact for 11 years from the end of their year, then deleted
+-- (closedAccounts.js's purge); a storno outliving its original loses the link.
 -- Storno receipts (refunds): stripe_invoice_id is then the refunded invoice,
 -- so it's unique only among sales (stripe_refund_id NULL).
 ALTER TABLE atodo.fiscal_receipts DROP CONSTRAINT IF EXISTS fiscal_receipts_stripe_invoice_id_key;
 ALTER TABLE atodo.fiscal_receipts ADD COLUMN IF NOT EXISTS stripe_refund_id TEXT UNIQUE;
 ALTER TABLE atodo.fiscal_receipts ADD COLUMN IF NOT EXISTS original_receipt_id UUID REFERENCES atodo.fiscal_receipts(id);
+ALTER TABLE atodo.fiscal_receipts DROP CONSTRAINT IF EXISTS fiscal_receipts_original_receipt_id_fkey;
+ALTER TABLE atodo.fiscal_receipts ADD CONSTRAINT fiscal_receipts_original_receipt_id_fkey
+    FOREIGN KEY (original_receipt_id) REFERENCES atodo.fiscal_receipts(id) ON DELETE SET NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS fiscal_receipts_sale_invoice ON atodo.fiscal_receipts (stripe_invoice_id) WHERE stripe_refund_id IS NULL;

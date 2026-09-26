@@ -6,6 +6,7 @@ const rateLimiter = require('../../lib/rateLimiter');
 const requireAtodoAuth = require('../../lib/atodo/authenticate');
 const { hashPassword, verifyPassword } = require('../../lib/atodo/password');
 const { toUser, issueToken, toPasswordVersion } = require('../../lib/atodo/token');
+const { reopenAccount } = require('../../lib/atodo/closedAccounts');
 const { enforceLifecycleDeletion } = require('../../lib/atodo/lifecycle');
 const sendEmail = require('../../lib/atodo/mailer');
 const jwt = require('../../lib/atodo/jwt');
@@ -242,6 +243,14 @@ router.post('/login', rateLimiter.strict, asyncHandler(async (req, res) => {
 
  const account = rows[0];
  if (!verifyPassword(password, account.password_hash)) return invalidCredentials();
+
+ // A closed (deleted) account, within its year: logging in reopens it,
+ // empty -- see lib/atodo/closedAccounts.js. `restored` tells the client
+ // to say so.
+ if (account.closed_at) {
+  const reopened = await reopenAccount(account.id);
+  return res.json({ token: issueToken(reopened), user: toUser(reopened), restored: true });
+ }
 
  const deletion = await enforceLifecycleDeletion(account);
  if (deletion) return res.status(410).json(deletion);

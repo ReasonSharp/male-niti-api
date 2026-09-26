@@ -10,6 +10,7 @@ const sendEmail = require('../../lib/atodo/mailer');
 const { buildFrontendLink } = require('../../lib/atodo/links');
 const { getStripe } = require('../../lib/atodo/stripe');
 const { renderEmail } = require('../../lib/atodo/emailTemplate');
+const { closeAccount } = require('../../lib/atodo/closedAccounts');
 
 // Same check as routes/atodo/auth.js's registration.
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -174,7 +175,7 @@ router.delete('/me', asyncHandler(async (req, res) => {
   const sub = await getStripe().subscriptions.retrieve(subscriptionId);
   if (!['canceled', 'incomplete_expired'].includes(sub.status)) await getStripe().subscriptions.cancel(subscriptionId);
  }
- await db.query('DELETE FROM atodo.accounts WHERE id = $1', [req.atodoAuth.id]);
+ await closeAccount(req.atodoAuth.id); // closed, not erased: email, password hash and trial status kept a year -- see closedAccounts.js
  res.status(204).send();
 }));
 

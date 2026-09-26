@@ -13,8 +13,16 @@ const router = express.Router();
 // Mounted at /atodo/v1/subscriptions behind requireAtodoAuth (see routes/atodo/index.js).
 
 const TRIAL_DURATION_MS = 14 * 24 * 60 * 60 * 1000;
+
+// One trial per account, and only for an account that has never had any
+// plan: not after a trial (running or lapsed), and not after a paid
+// subscription, even a cancelled/expired one -- those subscribe again
+// through checkout. subscription_plan is never reset to NULL once set, so
+// "still NULL" is exactly "never had one"; checked in the UPDATE itself so
+// concurrent requests can't both start a trial. trial_ineligible extends
+// that across closing (deleting) and reopening the account (see
+// lib/atodo/closedAccounts.js).
 router.post('/trial', asyncHandler(async (req, res) => {
- // Currently allows repeat trials (useful for testing) -- see api-spec.yaml.
  const now = new Date();
  const expiresAt = new Date(now.getTime() + TRIAL_DURATION_MS);
 
@@ -23,10 +31,14 @@ router.post('/trial', asyncHandler(async (req, res) => {
     subscription_id = $1, subscription_plan = 'trial', subscription_billing_interval = NULL,
     subscription_started_at = $2, subscription_expires_at = $3,
     subscription_cancel_at_period_end = false, subscription_scheduled_deletion = false
-   WHERE id = $4 RETURNING *`,
+   WHERE id = $4 AND subscription_plan IS NULL AND NOT trial_ineligible RETURNING *`,
   [crypto.randomUUID(), now, expiresAt, req.atodoAuth.id]
  );
- if (rows.length === 0) return res.status(401).json({ code: 'UNAUTHENTICATED', message: 'Missing or invalid bearer token.' });
+ if (rows.length === 0) {
+  const { rows: existing } = await db.query('SELECT 1 FROM atodo.accounts WHERE id = $1', [req.atodoAuth.id]);
+  if (existing.length === 0) return res.status(401).json({ code: 'UNAUTHENTICATED', message: 'Missing or invalid bearer token.' });
+  return res.status(409).json({ code: 'TRIAL_UNAVAILABLE', message: 'This account has already had a trial or a subscription.' });
+ }
 
  res.json({ token: issueToken(rows[0]), user: toUser(rows[0]) });
 }));
@@ -74,6 +86,20 @@ router.post('/checkout-sessions', asyncHandler(async (req, res) => {
   customer: customerId,
   client_reference_id: account.id,
   line_items: [{ price: priceFor(billingInterval), quantity: 1 }],
+  // We are the seller (B2C only, outside the VAT system, fiscalizing every
+  // payment ourselves) -- so none of the account-level defaults that would
+  // change that apply, whatever the Dashboard says:
+  //  - no Managed Payments (Stripe as merchant of record, collecting VAT);
+  //  - no automatic tax: prices are final, VAT isn't charged;
+  //  - no tax ID collection -- that's Checkout's "I'm purchasing as a
+  //    business" checkbox; selling to businesses would mean e-invoices;
+  //  - no adaptive pricing: charged in EUR, as the receipts are;
+  //  - cards only, since receipts state card payment (NacinPlac K).
+  managed_payments: { enabled: false },
+  automatic_tax: { enabled: false },
+  tax_id_collection: { enabled: false },
+  adaptive_pricing: { enabled: false },
+  payment_method_types: ['card'],
   subscription_data: {
    metadata: { accountId: account.id },
    // Stripe's recommended mode for new subscriptions: accurate prorations

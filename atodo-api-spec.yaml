@@ -290,6 +290,15 @@ paths:
         `DELETE /users/me/schedule-deletion`) actually take effect: logging
         into an account that's now due for either kind of deletion deletes
         it right here, before a token is ever issued for it.
+
+        Deleting an account (either way, or `DELETE /users/me`) closes it
+        rather than erasing it outright: for a year it keeps only its
+        email, password hash and whether it ever had a trial or
+        subscription. Logging in to a closed account with the right
+        password within that year reopens it, empty (`restored: true`),
+        without a new free trial if it had one; its email stays taken for
+        registering or changing another account's login email to it
+        (`EMAIL_TAKEN`). After the year it's gone for good.
       security: []
       requestBody:
         required: true
@@ -311,6 +320,9 @@ paths:
                 properties:
                   token: { $ref: "#/components/schemas/Token" }
                   user: { $ref: "#/components/schemas/User" }
+                  restored:
+                    type: boolean
+                    description: Present (true) only when this login reopened a closed (deleted) account -- it starts out empty.
         "401":
           description: Wrong email or password.
           content:
@@ -439,10 +451,12 @@ paths:
               schema: { $ref: "#/components/schemas/Error" }
     delete:
       tags: [Users]
-      summary: Permanently delete the current account and all its data, immediately
+      summary: Delete the current account and all its data, immediately
       description: >-
-        Deletes the account row and every task/note/preference tied to it.
-        Takes effect immediately and can't be undone -- this is the
+        Deletes every task/note/preference tied to the account and closes
+        it: only its email, password hash and trial status are kept, for a
+        year (see `POST /auth/login` -- logging in again reopens it, empty).
+        Takes effect immediately and the data can't be restored -- this is the
         "Delete immediately" choice in Settings' danger zone. A paying
         subscriber choosing to keep access until their current billing
         period ends instead wants `POST /users/me/schedule-deletion`, not
@@ -720,10 +734,13 @@ paths:
       tags: [Subscriptions]
       summary: Start a 14-day Pro trial for the current account
       description: >-
-        Identical to a paid Pro subscription while it lasts. Currently
-        allows repeat trials (useful for testing); a production
-        implementation is expected to allow only one trial per account
-        ever, tracked server-side.
+        Identical to a paid Pro subscription while it lasts. Only for an
+        account that has never had any plan -- one trial per account, and
+        none after a paid subscription, even a cancelled or expired one
+        (those subscribe again through checkout). Deleting the account
+        doesn't reset this: a closed account keeps its trial status for the
+        year it's kept, and reopening it doesn't bring back a trial (see
+        `POST /auth/login`). See the User's `trialAvailable`.
       responses:
         "200":
           description: Trial started.
@@ -739,6 +756,12 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: The account has already had a trial or a subscription.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              example: { code: TRIAL_UNAVAILABLE, message: "This account has already had a trial or a subscription." }
 
   /subscriptions/checkout-sessions:
     post:
@@ -1094,6 +1117,12 @@ components:
           type: string
           enum: [pending, next-recurrence, all]
         subscription: { $ref: "#/components/schemas/Subscription" }
+        trialAvailable:
+          type: boolean
+          description: >-
+            Whether `POST /subscriptions/trial` would succeed: the account
+            has never had any plan (trial or paid) -- counting before it was
+            deleted and reopened (see `POST /auth/login`).
 
     FrequencyOnce:
       type: object

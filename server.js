@@ -29,6 +29,7 @@ const atodoCors = require('./lib/atodo/cors');
 const atodoStripeWebhook = require('./routes/atodo/stripeWebhook');
 const { paymentsStatus, getFiscalConfig } = require('./lib/atodo/payments');
 const { startReceiptRetries } = require('./lib/atodo/fiscal/receipts');
+const { startPurging } = require('./lib/atodo/closedAccounts');
 
 const app = express();
 const port = 50000;
@@ -65,6 +66,7 @@ console.log(payments.ok
  ? `[atodo billing] payments enabled${payments.reason ? ` (${payments.reason})` : ''}`
  : `[atodo billing] payments DISABLED: ${payments.reason}`);
 if (getFiscalConfig()) startReceiptRetries(getFiscalConfig());
+startPurging();
 
 app.listen(port, () => {
  console.log(`Server is running on port ${port}`);
