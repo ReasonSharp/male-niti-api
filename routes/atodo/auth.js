@@ -10,6 +10,7 @@ const { enforceLifecycleDeletion } = require('../../lib/atodo/lifecycle');
 const sendEmail = require('../../lib/atodo/mailer');
 const jwt = require('../../lib/atodo/jwt');
 const { buildFrontendLink } = require('../../lib/atodo/links');
+const { renderEmail } = require('../../lib/atodo/emailTemplate');
 
 const router = express.Router();
 
@@ -54,18 +55,13 @@ router.post('/register', rateLimiter.strict, asyncHandler(async (req, res) => {
   [email, hashPassword(password), token]
  );
 
- const verificationLink = buildVerificationLink(token);
- sendEmail(
-  email,
-  'Verify your A-To-Do account',
-  `Welcome! Confirm your email to activate your A-To-Do account.\n\n`
-  + `Open this link within 6 hours:\n${verificationLink}\n\n`
-  + `If your email client doesn't show clickable links, copy and paste the URL above into your browser.`,
-  `<p>Welcome! Confirm your email to activate your A-To-Do account.</p>`
-  + `<p><a href="${verificationLink}">Verify your email</a></p>`
-  + `<p>If the button above doesn't work, copy and paste this URL into your browser:</p>`
-  + `<p>${verificationLink}</p>`
- );
+ const verificationEmail = renderEmail({
+  heading: 'Verify your A-To-Do account',
+  paragraphs: ['Welcome! Confirm your email address to activate your A-To-Do account. The link is valid for 6 hours.'],
+  action: { label: 'Verify your email', url: buildVerificationLink(token) },
+  afterAction: ["If you didn't sign up for A-To-Do, just ignore this email."],
+ });
+ sendEmail(email, 'Verify your A-To-Do account', verificationEmail.text, verificationEmail.html);
 
  res.status(202).send();
 }));
@@ -191,16 +187,14 @@ router.post('/undo-email-change', rateLimiter.strict, asyncHandler(async (req, r
  }
 
  const resetToken = jwt.sign({ purpose: 'password-reset', acct: account.id, pwv: toPasswordVersion(restored) }, PASSWORD_RESET_TTL_SECONDS);
- sendEmail(
-  payload.oldEmail,
-  'Your A-To-Do login email change was undone',
-  `Your A-To-Do login email is ${payload.oldEmail} again, and every session has been signed out.\n\n`
-  + `If you didn't finish setting a new password right after undoing the change, do it now -- `
-  + `whoever changed your email may know your current one.`,
-  `<p>Your A-To-Do login email is ${payload.oldEmail} again, and every session has been signed out.</p>`
-  + `<p>If you didn't finish setting a new password right after undoing the change, do it now -- `
-  + `whoever changed your email may know your current one.</p>`
- );
+ const undoneEmail = renderEmail({
+  heading: 'Your login email change was undone',
+  paragraphs: [
+   `Your A-To-Do login email is ${payload.oldEmail} again, and every session has been signed out.`,
+   "If you didn't finish setting a new password right after undoing the change, change it now in Settings -- whoever changed your email may know your current one.",
+  ],
+ });
+ sendEmail(payload.oldEmail, 'Your A-To-Do login email change was undone', undoneEmail.text, undoneEmail.html);
 
  res.json({ email: payload.oldEmail, resetToken });
 }));

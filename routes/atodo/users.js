@@ -8,6 +8,7 @@ const rateLimiter = require('../../lib/rateLimiter');
 const jwt = require('../../lib/atodo/jwt');
 const sendEmail = require('../../lib/atodo/mailer');
 const { buildFrontendLink } = require('../../lib/atodo/links');
+const { renderEmail } = require('../../lib/atodo/emailTemplate');
 
 // Same check as routes/atodo/auth.js's registration.
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -138,26 +139,26 @@ router.post('/me/change-email', rateLimiter.strict, asyncHandler(async (req, res
  const verifyLink = buildFrontendLink('verifyEmailChange', verifyToken);
  const undoLink = buildFrontendLink('undoEmailChange', undoToken);
 
- sendEmail(
-  email,
-  'Confirm your new A-To-Do login email',
-  `Your A-To-Do login email is being changed to this address.\n\n`
-  + `Open this link within 6 hours to confirm it -- from then on, log in with this address:\n${verifyLink}\n\n`
-  + `If you didn't ask for this, just ignore this email.`,
-  `<p>Your A-To-Do login email is being changed to this address.</p>`
-  + `<p><a href="${verifyLink}">Confirm this email</a> (within 6 hours) -- from then on, log in with this address.</p>`
-  + `<p>If you didn't ask for this, just ignore this email.</p><p>${verifyLink}</p>`
- );
- sendEmail(
-  account.email,
-  'Your A-To-Do login email is being changed',
-  `Someone asked to change your A-To-Do login email from ${account.email} to ${email}.\n\n`
-  + `If that was you, there's nothing to do. If it wasn't, undo the change right away with this link `
-  + `(valid for 30 days) -- it restores this address and has you set a new password:\n${undoLink}`,
-  `<p>Someone asked to change your A-To-Do login email from ${account.email} to ${email}.</p>`
-  + `<p>If that was you, there's nothing to do. If it wasn't, <a href="${undoLink}">undo the change</a> right away `
-  + `(valid for 30 days) -- it restores this address and has you set a new password.</p><p>${undoLink}</p>`
- );
+ const confirmEmail = renderEmail({
+  heading: 'Confirm your new login email',
+  paragraphs: [
+   'Your A-To-Do login email is being changed to this address.',
+   'Confirm it within 6 hours -- from then on, you log in with this address.',
+  ],
+  action: { label: 'Confirm this email', url: verifyLink },
+  afterAction: ["If you didn't ask for this, just ignore this email."],
+ });
+ sendEmail(email, 'Confirm your new A-To-Do login email', confirmEmail.text, confirmEmail.html);
+
+ const noticeEmail = renderEmail({
+  heading: 'Your login email is being changed',
+  paragraphs: [
+   `Someone asked to change your A-To-Do login email from ${account.email} to ${email}.`,
+   "If that was you, there's nothing to do. If it wasn't, undo the change right away -- it restores this address and has you set a new password. The link is valid for 30 days.",
+  ],
+  action: { label: 'Undo the change', url: undoLink },
+ });
+ sendEmail(account.email, 'Your A-To-Do login email is being changed', noticeEmail.text, noticeEmail.html);
 
  res.json(toUser(updated[0]));
 }));
