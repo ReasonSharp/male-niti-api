@@ -6,6 +6,7 @@ const { toUser, issueToken } = require('../../lib/atodo/token');
 const { getStripe, priceFor } = require('../../lib/atodo/stripe');
 const { paymentsStatus } = require('../../lib/atodo/payments');
 const { confirmCheckoutSession } = require('../../lib/atodo/billing');
+const { createPortalSession } = require('../../lib/atodo/portal');
 
 const router = express.Router();
 
@@ -73,7 +74,13 @@ router.post('/checkout-sessions', asyncHandler(async (req, res) => {
   customer: customerId,
   client_reference_id: account.id,
   line_items: [{ price: priceFor(billingInterval), quantity: 1 }],
-  subscription_data: { metadata: { accountId: account.id } },
+  subscription_data: {
+   metadata: { accountId: account.id },
+   // Stripe's recommended mode for new subscriptions: accurate prorations
+   // and billing-period handling (not that the plan can be switched -- see
+   // the portal configuration in lib/atodo/portal.js).
+   billing_mode: { type: 'flexible' },
+  },
   // successUrl carries Stripe's own {CHECKOUT_SESSION_ID} placeholder (see
   // the client's checkout.js), which it fills in on the way back.
   success_url: successUrl,
@@ -115,6 +122,29 @@ router.get('/checkout-sessions/:sessionId', asyncHandler(async (req, res) => {
  }
 
  res.json(body);
+}));
+
+// A Stripe Customer Portal session ("Manage billing"): the customer's card,
+// and cancelling -- see lib/atodo/portal.js for what else is (not) allowed
+// there. Only for an account that has ever been through Checkout (i.e. has a
+// Stripe customer), and only while payments are possible at all -- a new
+// card can settle an overdue renewal on the spot, and that payment has to be
+// fiscalizable like any other.
+router.post('/portal-session', asyncHandler(async (req, res) => {
+ const { returnUrl } = req.body || {};
+ if (typeof returnUrl !== 'string') return res.status(400).send('returnUrl is required');
+ const status = paymentsStatus();
+ if (!status.ok) {
+  console.error(`[atodo billing] billing portal refused: ${status.reason}`);
+  return res.status(503).json({ code: 'PAYMENTS_UNAVAILABLE', message: 'Payments are temporarily unavailable.' });
+ }
+ const { rows } = await db.query('SELECT stripe_customer_id FROM atodo.accounts WHERE id = $1', [req.atodoAuth.id]);
+ if (rows.length === 0) return res.status(401).json({ code: 'UNAUTHENTICATED', message: 'Missing or invalid bearer token.' });
+ if (!rows[0].stripe_customer_id) {
+  return res.status(409).json({ code: 'NO_BILLING_ACCOUNT', message: 'This account has never subscribed, so there is no billing to manage.' });
+ }
+ const session = await createPortalSession(rows[0].stripe_customer_id, returnUrl);
+ res.json({ url: session.url });
 }));
 
 router.post('/cancel', asyncHandler(async (req, res) => {

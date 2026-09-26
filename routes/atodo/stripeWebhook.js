@@ -35,6 +35,13 @@ module.exports = asyncHandler(async (req, res) => {
   case 'customer.subscription.deleted':
    await billing.syncSubscription(object);
    break;
+  case 'refund.created':
+  case 'refund.updated':
+   await billing.handleRefund(object);
+   break;
+  case 'charge.dispute.created':
+   await billing.handleDisputeCreated(object);
+   break;
   default:
    break; // not one we act on -- acknowledged so Stripe doesn't keep retrying
  }

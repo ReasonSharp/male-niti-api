@@ -61,7 +61,9 @@ app.use('/atodo/v1', atodoCors, atodoRouter);
 // Payments need Stripe AND fiscalization -- say plainly at startup whether
 // they're on, and keep re-sending any receipt still waiting for its JIR.
 const payments = paymentsStatus();
-console.log(payments.ok ? '[atodo billing] payments enabled' : `[atodo billing] payments DISABLED: ${payments.reason}`);
+console.log(payments.ok
+ ? `[atodo billing] payments enabled${payments.reason ? ` (${payments.reason})` : ''}`
+ : `[atodo billing] payments DISABLED: ${payments.reason}`);
 if (getFiscalConfig()) startReceiptRetries(getFiscalConfig());
 
 app.listen(port, () => {

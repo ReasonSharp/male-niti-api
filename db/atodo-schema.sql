@@ -210,7 +210,7 @@ CREATE TABLE IF NOT EXISTS atodo.fiscal_receipts (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     account_id UUID REFERENCES atodo.accounts(id) ON DELETE SET NULL,
     customer_email TEXT NOT NULL,
-    stripe_invoice_id TEXT UNIQUE NOT NULL,
+    stripe_invoice_id TEXT NOT NULL,
     year SMALLINT NOT NULL,
     number INTEGER NOT NULL,
     premises TEXT NOT NULL,
@@ -227,3 +227,9 @@ CREATE TABLE IF NOT EXISTS atodo.fiscal_receipts (
     emailed_at TIMESTAMPTZ,
     UNIQUE (premises, device, year, number)
 );
+-- Storno receipts (refunds): stripe_invoice_id is then the refunded invoice,
+-- so it's unique only among sales (stripe_refund_id NULL).
+ALTER TABLE atodo.fiscal_receipts DROP CONSTRAINT IF EXISTS fiscal_receipts_stripe_invoice_id_key;
+ALTER TABLE atodo.fiscal_receipts ADD COLUMN IF NOT EXISTS stripe_refund_id TEXT UNIQUE;
+ALTER TABLE atodo.fiscal_receipts ADD COLUMN IF NOT EXISTS original_receipt_id UUID REFERENCES atodo.fiscal_receipts(id);
+CREATE UNIQUE INDEX IF NOT EXISTS fiscal_receipts_sale_invoice ON atodo.fiscal_receipts (stripe_invoice_id) WHERE stripe_refund_id IS NULL;

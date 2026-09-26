@@ -1,6 +1,3 @@
-# Copied from the sibling `atodo` client project's api-spec.yaml (this
-# repo's routes/atodo/ implements it) -- keep in sync by hand when that
-# spec changes, there's no automated sync between the two repos.
 openapi: 3.0.3
 info:
   title: A-To-Do API
@@ -760,8 +757,11 @@ paths:
         reports the payment (`POST /stripe/webhook`), which is also when the
         payment's receipt is fiscalized (Croatian B2C fiscalization) and
         emailed. Refused with 503 `PAYMENTS_UNAVAILABLE` before anything is
-        created in Stripe whenever payments can't be fiscalized (no usable
-        fiscalization certificate) or Stripe isn't configured.
+        created in Stripe whenever payments can't be fiscalized (live
+        Stripe keys without a usable certificate for the production
+        fiscalization service) or Stripe isn't configured. With Stripe test
+        keys, payments are always allowed; their receipts are fiscalized
+        against the test service, or skipped when no certificate is set up.
       requestBody:
         required: true
         content:
@@ -821,8 +821,12 @@ paths:
         `Stripe-Signature` header (the endpoint's signing secret), not a
         bearer token. Handles checkout.session.completed/expired,
         invoice.paid (every payment, first and renewals: extends the
-        subscription and issues a fiscalized receipt) and
-        customer.subscription.updated/deleted. Idempotent. Answers 5xx when
+        subscription and issues a fiscalized receipt),
+        customer.subscription.updated/deleted, refund.created/updated (a
+        refund of a fiscalized payment gets a fiscalized storno receipt --
+        a new receipt for the negative refunded amount, naming the one it
+        cancels -- emailed to the customer) and charge.dispute.created
+        (the business owner is emailed to respond in Stripe). Idempotent. Answers 5xx when
         an event can't be processed yet (e.g. a payment arriving while
         fiscalization is unavailable), so Stripe re-delivers it later.
       security: []
@@ -871,6 +875,60 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+
+  /subscriptions/portal-session:
+    post:
+      tags: [Subscriptions]
+      summary: Open Stripe's Customer Portal ("Manage billing")
+      description: >-
+        Creates a Stripe Customer Portal session for this account's Stripe
+        customer: there the customer can update their card and cancel (at
+        period end) or undo a pending cancellation; switching plans, invoice
+        history and editing their email/address are disabled. Changes made
+        there reach the account through `POST /stripe/webhook`. Only for an
+        account that has been through checkout; refused with 503
+        `PAYMENTS_UNAVAILABLE` whenever checkout would be.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [returnUrl]
+              properties:
+                returnUrl:
+                  type: string
+                  format: uri
+                  description: Where the portal's "return" link goes (this app's index.html).
+      responses:
+        "200":
+          description: Session created.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  url:
+                    type: string
+                    format: uri
+                    description: Stripe's hosted portal page -- redirect the browser here.
+        "401":
+          description: Missing/invalid bearer token.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: The account has no Stripe customer (never subscribed through checkout).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              example: { code: NO_BILLING_ACCOUNT, message: "This account has never subscribed, so there is no billing to manage." }
+        "503":
+          description: Payments are unavailable (Stripe or fiscalization not configured).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              example: { code: PAYMENTS_UNAVAILABLE, message: "Payments are temporarily unavailable." }
 
   /subscriptions/cancel:
     post:
