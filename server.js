@@ -30,6 +30,7 @@ const atodoStripeWebhook = require('./routes/atodo/stripeWebhook');
 const { paymentsStatus, getFiscalConfig } = require('./lib/atodo/payments');
 const { startReceiptRetries } = require('./lib/atodo/fiscal/receipts');
 const { startPurging } = require('./lib/atodo/closedAccounts');
+const { startDbVersionChecks, requireDbInSync, onDbInSync, health } = require('./lib/dbVersion');
 
 const app = express();
 const port = 50000;
@@ -39,9 +40,18 @@ const port = 50000;
 app.set('trust proxy', process.env.TRUST_PROXY || 1);
 
 app.use(requestLogger);
+// Answers even while the database isn't usable -- that's what it reports.
+app.get('/health', health);
+// CORS for /atodo/v1 up front, so preflights and the 503 MAINTENANCE below
+// are readable from the client's origin too (a cross-origin page can't
+// read an error without these headers -- it'd look like a network failure).
+app.use('/atodo/v1', atodoCors);
+// Nothing past here runs unless the database schema is the version this
+// code expects (see lib/dbVersion.js) -- 503 MAINTENANCE otherwise.
+app.use(requireDbInSync);
 app.use(checkBanned);
 // Before express.json(): Stripe's signature check needs the raw body.
-app.post('/atodo/v1/stripe/webhook', atodoCors, express.raw({ type: 'application/json' }), atodoStripeWebhook);
+app.post('/atodo/v1/stripe/webhook', express.raw({ type: 'application/json' }), atodoStripeWebhook);
 app.use(express.json());
 app.use(authenticate);
 app.use(rateLimiter.general);
@@ -56,8 +66,8 @@ app.use('/v1/api-docs', docsRouter);
 app.use('/api-keys', apiKeysRouter);
 app.use('/imprint', imprintRouter);
 app.use('/feed.xml', feedRouter);
-app.use('/atodo/v1/api-docs', atodoCors, atodoDocsRouter);
-app.use('/atodo/v1', atodoCors, atodoRouter);
+app.use('/atodo/v1/api-docs', atodoDocsRouter);
+app.use('/atodo/v1', atodoRouter);
 
 // Payments need Stripe AND fiscalization -- say plainly at startup whether
 // they're on, and keep re-sending any receipt still waiting for its JIR.
@@ -65,8 +75,16 @@ const payments = paymentsStatus();
 console.log(payments.ok
  ? `[atodo billing] payments enabled${payments.reason ? ` (${payments.reason})` : ''}`
  : `[atodo billing] payments DISABLED: ${payments.reason}`);
-if (getFiscalConfig()) startReceiptRetries(getFiscalConfig());
-startPurging();
+// Background jobs need the schema too: started once the database is in
+// sync (and each run skipped while it isn't -- see their own run loops).
+startDbVersionChecks();
+let backgroundJobsStarted = false;
+onDbInSync(() => {
+ if (backgroundJobsStarted) return;
+ backgroundJobsStarted = true;
+ if (getFiscalConfig()) startReceiptRetries(getFiscalConfig());
+ startPurging();
+});
 
 app.listen(port, () => {
  console.log(`Server is running on port ${port}`);

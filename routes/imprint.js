@@ -13,7 +13,7 @@ const COLUMNS = [
  'hosting_provider',
 ];
 
-// phone is the only nullable column - see db/schema.sql.
+// phone is the only nullable column - see db/migrations/UP_001_Version_cms.sql.
 const REQUIRED_COLUMNS = COLUMNS.filter((c) => c !== 'phone');
 
 router.get('/', asyncHandler(async (req, res) => {

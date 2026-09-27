@@ -19,6 +19,10 @@ COPY ./lib ./lib
 COPY ./scripts ./scripts
 
 FROM node:20.7.0-alpine3.17
+# The platform version this image was built as (e.g. 2026.09.27.1; `dev` for
+# untagged builds) -- reported by GET /health.
+ARG VERSION=dev
+ENV APP_VERSION=${VERSION}
 RUN apk add --update --no-cache \
     cairo \
     jpeg \

@@ -2,7 +2,7 @@
 
 Implements the endpoints described in `api-spec.yaml`, backed by Postgres. Full interactive API documentation (Swagger UI) is served at `/v1/api-docs`.
 
-This repo does not run its own Postgres container — it expects one reachable on `your-network`, with `db/schema.sql` applied to it (e.g. by another project that composes this API together with a database and other services). Point `.env`'s `PGHOST`/`PGPORT`/`PGDATABASE`/`PGUSER`/`PGPASSWORD` at that instance before building.
+This repo does not run its own Postgres container — it expects one reachable on `your-network`, with the schema from `db/migrations/` applied to it by dbupdater's `pgupgrade` (e.g. by another project that composes this API together with a database and other services). Point `.env`'s `PGHOST`/`PGPORT`/`PGDATABASE`/`PGUSER`/`PGPASSWORD` at that instance before building.
 
 ## Building the API
 

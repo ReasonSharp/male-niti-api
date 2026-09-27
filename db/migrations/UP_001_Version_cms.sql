@@ -1,11 +1,15 @@
--- Database schema for the Male Niti Content API.
--- Run automatically on first init by the postgres container in docker-compose.yml
--- (mounted into /docker-entrypoint-initdb.d/), or apply manually with:
---   psql "$DATABASE_URL" -f db/schema.sql
+-- Version 001: the Male Niti CMS -- services, pricing, work, blog, imprint,
+-- contact submissions, API keys and IP bans (public schema).
+--
+-- This is exactly what the live database was created with before versioning
+-- existed (the platform's former containers/postgres/UP_001_20260723.sql);
+-- such a database is adopted with `pgupgrade --baseline 001` instead of
+-- running this. Applied by dbupdater's pgupgrade, in one transaction that
+-- also records dbVersion -- see db/migrations/README.md.
 
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
-CREATE TABLE IF NOT EXISTS services (
+CREATE TABLE services (
     id SERIAL PRIMARY KEY,
     sort_order INTEGER NOT NULL DEFAULT 0,
     tone TEXT NOT NULL CHECK (tone IN ('indigo', 'green')),
@@ -22,7 +26,7 @@ CREATE TABLE IF NOT EXISTS services (
     list_en TEXT[] NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS pricing_plans (
+CREATE TABLE pricing_plans (
     id SERIAL PRIMARY KEY,
     sort_order INTEGER NOT NULL DEFAULT 0,
     tag_hr TEXT NOT NULL,
@@ -40,7 +44,7 @@ CREATE TABLE IF NOT EXISTS pricing_plans (
     featured BOOLEAN NOT NULL DEFAULT FALSE
 );
 
-CREATE TABLE IF NOT EXISTS work_items (
+CREATE TABLE work_items (
     id SERIAL PRIMARY KEY,
     sort_order INTEGER NOT NULL DEFAULT 0,
     featured BOOLEAN NOT NULL DEFAULT FALSE,
@@ -72,7 +76,7 @@ CREATE TABLE IF NOT EXISTS work_items (
     post_slug TEXT
 );
 
-CREATE TABLE IF NOT EXISTS blog_posts (
+CREATE TABLE blog_posts (
     id SERIAL PRIMARY KEY,
     slug TEXT UNIQUE NOT NULL,
     published_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -99,7 +103,7 @@ CREATE TABLE IF NOT EXISTS blog_posts (
 -- Single-row table: the site's one legally-required imprint. Application
 -- logic (routes/imprint.js), not a DB constraint, enforces that only one
 -- row ever exists.
-CREATE TABLE IF NOT EXISTS imprint (
+CREATE TABLE imprint (
     id SERIAL PRIMARY KEY,
     legal_name TEXT NOT NULL,
     legal_form_hr TEXT NOT NULL,
@@ -119,7 +123,7 @@ CREATE TABLE IF NOT EXISTS imprint (
     hosting_provider TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS contact_submissions (
+CREATE TABLE contact_submissions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name TEXT NOT NULL,
     email TEXT NOT NULL,
@@ -131,7 +135,7 @@ CREATE TABLE IF NOT EXISTS contact_submissions (
 
 -- Bearer-token API keys. Only the key's hash is stored; the plaintext is
 -- shown once at creation time by scripts/create-api-key.js and never again.
-CREATE TABLE IF NOT EXISTS api_keys (
+CREATE TABLE api_keys (
     id SERIAL PRIMARY KEY,
     key_hash TEXT UNIQUE NOT NULL,
     label TEXT NOT NULL,
@@ -142,9 +146,13 @@ CREATE TABLE IF NOT EXISTS api_keys (
 );
 
 -- IPs banned for abusive traffic (see lib/rateLimiter.js). expires_at NULL means permanent.
-CREATE TABLE IF NOT EXISTS banned_ips (
+CREATE TABLE banned_ips (
     ip TEXT PRIMARY KEY,
     reason TEXT,
     banned_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     expires_at TIMESTAMPTZ
 );
+
+-- Never downgrade below this: DOWN_001 would drop the whole CMS.
+INSERT INTO public.setting (settingName, settingValue) VALUES ('minAllowedVersion', '001')
+ON CONFLICT (settingName) DO UPDATE SET settingValue = EXCLUDED.settingValue;
