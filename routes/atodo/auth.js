@@ -200,8 +200,40 @@ router.post('/undo-email-change', rateLimiter.strict, asyncHandler(async (req, r
  res.json({ email: payload.oldEmail, resetToken });
 }));
 
-// Sets a new password with the reset token /undo-email-change handed out --
-// no current password needed, which is the point. Logs this session in.
+// "Forgot password?": emails a link to set a new password without the
+// current one -- valid for 30 minutes, and once: the token is bound to the
+// account's password version, so setting a new password (or any other
+// change of it) voids it, along with any other unused link. Always the same
+// 202, whether or not the email has an account (open or closed), so this
+// can't be used to find out which ones do. The link lands on the client's
+// `?resetPassword=` handling, which ends at POST /auth/reset-password.
+const FORGOT_PASSWORD_TTL_SECONDS = 30 * 60;
+router.post('/forgot-password', rateLimiter.strict, asyncHandler(async (req, res) => {
+ const email = typeof (req.body || {}).email === 'string' ? req.body.email.trim() : '';
+ if (!EMAIL_RE.test(email)) {
+  return res.status(400).json({ code: 'INVALID_EMAIL', message: 'Enter a valid email address.' });
+ }
+ const { rows } = await db.query('SELECT * FROM atodo.accounts WHERE email = $1', [email]);
+ if (rows.length > 0) {
+  const account = rows[0];
+  const token = jwt.sign({ purpose: 'password-reset', acct: account.id, pwv: toPasswordVersion(account) }, FORGOT_PASSWORD_TTL_SECONDS);
+  const resetEmail = renderEmail({
+   heading: 'Reset your A-To-Do password',
+   paragraphs: [`Someone -- hopefully you -- asked to reset the password for ${account.email}. Set a new one with the link below. It's valid for 30 minutes and works once.`],
+   action: { label: 'Set a new password', url: buildFrontendLink('resetPassword', token) },
+   afterAction: ["If you didn't ask for this, just ignore this email -- your password stays as it is."],
+  });
+  sendEmail(account.email, 'Reset your A-To-Do password', resetEmail.text, resetEmail.html);
+ }
+ res.status(202).send();
+}));
+
+// Sets a new password with a reset token -- from a "Forgot password?" link
+// (POST /auth/forgot-password) or the one /undo-email-change hands out; no
+// current password needed, which is the point. Logs this session in. A
+// closed (deleted) account is reopened, empty, the same way logging in to
+// it does (`restored: true`); one that's due for automatic deletion is
+// deleted instead, the same way a login would find it.
 router.post('/reset-password', rateLimiter.strict, asyncHandler(async (req, res) => {
  const { resetToken, newPassword } = req.body || {};
  const payload = jwt.verify(resetToken);
@@ -214,12 +246,21 @@ router.post('/reset-password', rateLimiter.strict, asyncHandler(async (req, res)
  // longer matches.
  if (rows.length === 0 || toPasswordVersion(rows[0]) !== payload.pwv) return invalidLink(res);
 
+ let restored = false;
+ if (rows[0].closed_at) {
+  await reopenAccount(payload.acct);
+  restored = true;
+ } else {
+  const deletion = await enforceLifecycleDeletion(rows[0]);
+  if (deletion) return res.status(410).json(deletion);
+ }
+
  const { rows: updated } = await db.query(
   `UPDATE atodo.accounts SET password_hash = $1, password_changed_at = now(), last_login_at = now(), last_active_at = now()
    WHERE id = $2 RETURNING *`,
   [hashPassword(newPassword), payload.acct]
  );
- res.json({ token: issueToken(updated[0]), user: toUser(updated[0]) });
+ res.json({ token: issueToken(updated[0]), user: toUser(updated[0]), ...(restored ? { restored: true } : {}) });
 }));
 
 router.post('/login', rateLimiter.strict, asyncHandler(async (req, res) => {

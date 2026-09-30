@@ -239,15 +239,53 @@ paths:
               schema: { $ref: "#/components/schemas/Error" }
               example: { code: EMAIL_TAKEN, message: "An account with that email already exists." }
 
+  /auth/forgot-password:
+    post:
+      tags: [Auth]
+      summary: Email a link to set a new password ("Forgot password?")
+      description: >-
+        If an account (open or closed) has this email, it's sent a link to
+        the client (`?resetPassword=<resetToken>`, see
+        `POST /auth/reset-password`) that sets a new password without the
+        current one. The link is valid for 30 minutes and works once: it's
+        bound to the account's password version, so setting a new password
+        voids it -- and any other unused link. Always answers 202, whether
+        or not the email has an account, so it can't be used to find out
+        which emails do.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email: { type: string, format: email }
+      responses:
+        "202":
+          description: Accepted (sent, if the email has an account).
+        "400":
+          description: Not a valid email address.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              example: { code: INVALID_EMAIL, message: "Enter a valid email address." }
+
   /auth/reset-password:
     post:
       tags: [Auth]
       summary: Set a new password with a reset token
       description: >-
-        `resetToken` comes from `POST /auth/undo-email-change`. Single-use
-        (it's bound to the password version it was issued for). Ends every
-        other session, like `POST /users/me/change-password`, and logs this
-        one in.
+        `resetToken` comes from a "Forgot password?" link
+        (`POST /auth/forgot-password`) or from
+        `POST /auth/undo-email-change`. Single-use (it's bound to the
+        password version it was issued for). Ends every other session, like
+        `POST /users/me/change-password`, and logs this one in. A closed
+        (deleted) account is reopened, empty -- the response then has
+        `restored: true`, as for `POST /auth/login`; one that's due for
+        automatic deletion (12 months' inactivity, a scheduled deletion)
+        answers 410 like a login would.
       security: []
       requestBody:
         required: true
@@ -269,6 +307,9 @@ paths:
                 properties:
                   token: { $ref: "#/components/schemas/Token" }
                   user: { $ref: "#/components/schemas/User" }
+                  restored:
+                    type: boolean
+                    description: Present (true) only when this reopened a closed (deleted) account.
         "400":
           description: newPassword is under 8 characters (INVALID_PASSWORD), or resetToken is invalid/expired/already used (INVALID_TOKEN).
           content:
