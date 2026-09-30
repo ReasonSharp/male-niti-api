@@ -1428,6 +1428,13 @@ components:
         createdAt:
           allOf: [{ $ref: "#/components/schemas/EpochMillis" }]
           description: When the task was first created (see the free-tier task limits, which grandfather by this field).
+        statsResetAt:
+          allOf: [{ $ref: "#/components/schemas/EpochMillis" }]
+          nullable: true
+          description: >-
+            When the task's stats were last reset (null = never). Stats count
+            the task's occurrences from then on; the task's own history is
+            untouched. Stored and returned as sent.
         log:
           type: array
           items: { $ref: "#/components/schemas/LogEntry" }

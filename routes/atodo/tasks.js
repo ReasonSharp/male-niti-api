@@ -24,6 +24,7 @@ function toTask(row) {
   endDate: row.end_date,
   frequency: row.frequency,
   createdAt: Number(row.created_at),
+  statsResetAt: row.stats_reset_at === null ? null : Number(row.stats_reset_at),
   log: row.log,
   comments: row.comments,
  };
@@ -89,8 +90,8 @@ router.put('/', asyncHandler(async (req, res) => {
     `INSERT INTO atodo.tasks (
       account_id, id, task_id, series_id, series_name, name, description, details,
       due_date, due_time, all_day, appointment, passive, recur_until_completed,
-      end_date, frequency, created_at, log, comments
-     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+      end_date, frequency, created_at, log, comments, stats_reset_at
+     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
      -- A duplicate id within the same request array (a client-side bug,
      -- e.g. a botched export/merge) would otherwise violate the primary
      -- key the same way -- last occurrence in the array wins instead.
@@ -111,7 +112,8 @@ router.put('/', asyncHandler(async (req, res) => {
       frequency = EXCLUDED.frequency,
       created_at = EXCLUDED.created_at,
       log = EXCLUDED.log,
-      comments = EXCLUDED.comments`,
+      comments = EXCLUDED.comments,
+      stats_reset_at = EXCLUDED.stats_reset_at`,
     [
      req.atodoAuth.id,
      task.id,
@@ -132,6 +134,7 @@ router.put('/', asyncHandler(async (req, res) => {
      task.createdAt,
      JSON.stringify(task.log ?? []),
      JSON.stringify(task.comments ?? []),
+     task.statsResetAt ?? null,
     ]
    );
   }
