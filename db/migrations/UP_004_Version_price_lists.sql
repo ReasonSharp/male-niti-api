@@ -1,6 +1,7 @@
 -- Version 004: the business model behind published price lists, in its own
 -- `maleniti` schema -- points of sale, their fiscal devices, brands and
--- their products, and every price list ever published with its prices.
+-- their products, price lists with every price they ever held, and which
+-- price list each point of sale used when.
 -- Croatian law (Odluka o objavi cjenika, NN 101/2026) wants each consumer-
 -- facing website to publish its price list as a machine-readable file, each
 -- version kept available for 30 days after it's replaced, every price
@@ -68,26 +69,38 @@ CREATE TABLE maleniti.product (
     name_trid INT NOT NULL REFERENCES maleniti.translation_key
 );
 
--- One published version of a point of sale's price list (prices can differ
--- between points of sale). Its prices may take effect at or after
--- published_at, each at its own valid_from.
+-- A price list: a set of products and their prices over time (see price).
+-- Which point of sale uses it, from when, is pos_price_list's business --
+-- one list can serve several points of sale, one after another or at once.
 CREATE TABLE maleniti.price_list (
     price_list_id SERIAL PRIMARY KEY,
-    point_of_sale_id INT NOT NULL REFERENCES maleniti.point_of_sale,
-    published_at TIMESTAMPTZ NOT NULL,
-    UNIQUE (point_of_sale_id, published_at)
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- A product's price from valid_from on, as listed by one price list. The
--- price in effect at a point of sale at any moment is its latest one
--- (by valid_from) there; its anchor price is the latest one flagged
--- anchored. special_sale marks a price applied during a special form of
--- sale (posebni oblik prodaje -- a discount, a promotion), which the price
--- list file has to state as well.
+-- Which price list a point of sale uses from valid_from on: at any moment
+-- its latest one (by valid_from) up to then, so a point of sale uses one
+-- list at a time.
+CREATE TABLE maleniti.pos_price_list (
+    pos_price_list_id SERIAL PRIMARY KEY,
+    point_of_sale_id INT NOT NULL REFERENCES maleniti.point_of_sale,
+    price_list_id INT NOT NULL REFERENCES maleniti.price_list,
+    valid_from TIMESTAMPTZ NOT NULL,
+    UNIQUE (point_of_sale_id, valid_from)
+);
+
+-- A product's price in a price list from valid_from on. A list's products
+-- are the ones it has prices for; a price change is a new row (a new
+-- price_id) at the moment it takes effect, so the list keeps its whole
+-- history: the price in effect at any moment is the product's latest one
+-- (by valid_from) up to then in the list a point of sale uses, and the
+-- anchor price the latest one flagged anchored among the lists that point
+-- of sale has used. special_sale marks a price applied during a special
+-- form of sale (posebni oblik prodaje -- a discount, a promotion), which
+-- the price list file has to state as well.
 CREATE TABLE maleniti.price (
     price_id SERIAL PRIMARY KEY,
     product_id INT NOT NULL REFERENCES maleniti.product,
-    price_list_id INT NOT NULL REFERENCES maleniti.price_list ON DELETE CASCADE,
+    price_list_id INT NOT NULL REFERENCES maleniti.price_list,
     valid_from TIMESTAMPTZ NOT NULL,
     price_eur NUMERIC(10, 2) NOT NULL CHECK (price_eur >= 0),
     anchored BOOLEAN NOT NULL DEFAULT FALSE,
@@ -95,7 +108,7 @@ CREATE TABLE maleniti.price (
     UNIQUE (product_id, price_list_id, valid_from)
 );
 
-CREATE INDEX price_product_valid_from ON maleniti.price (product_id, valid_from);
+CREATE INDEX price_list_product_valid_from ON maleniti.price (price_list_id, product_id, valid_from);
 
 -- The business as it is today. Seeded here rather than as demo data: these
 -- are real records (the published price lists are legal ones).
@@ -139,15 +152,15 @@ FROM maleniti.brand,
      ) AS p (code, name_trid)
 WHERE brand.code = 'atodo';
 
--- WEB1's first price list: A-To-Do's prices as they were on 10 Sept 2026,
--- the anchor date (anchored, so they're its anchor prices from then on).
-INSERT INTO maleniti.price_list (point_of_sale_id, published_at)
-SELECT point_of_sale_id, '2026-09-10 00:00:00 Europe/Zagreb' FROM maleniti.point_of_sale WHERE code = 'WEB1';
+-- A-To-Do's price list: its prices as they were on 10 Sept 2026, the anchor
+-- date (anchored, so they're its anchor prices from then on), used at WEB1
+-- from then on.
+INSERT INTO maleniti.price_list DEFAULT VALUES;
 
 INSERT INTO maleniti.price (product_id, price_list_id, valid_from, price_eur, anchored)
-SELECT product.product_id, price_list.price_list_id, price_list.published_at, p.price_eur, TRUE
-FROM maleniti.price_list
-JOIN maleniti.point_of_sale USING (point_of_sale_id),
-     (VALUES ('atodo-free', 0.00), ('atodo-pro-monthly', 2.00), ('atodo-pro-yearly', 20.00)) AS p (code, price_eur)
-JOIN maleniti.product ON product.code = p.code
-WHERE point_of_sale.code = 'WEB1';
+SELECT product.product_id, 1, '2026-09-10 00:00:00 Europe/Zagreb', p.price_eur, TRUE
+FROM (VALUES ('atodo-free', 0.00), ('atodo-pro-monthly', 2.00), ('atodo-pro-yearly', 20.00)) AS p (code, price_eur)
+JOIN maleniti.product ON product.code = p.code;
+
+INSERT INTO maleniti.pos_price_list (point_of_sale_id, price_list_id, valid_from)
+SELECT point_of_sale_id, 1, '2026-09-10 00:00:00 Europe/Zagreb' FROM maleniti.point_of_sale WHERE code = 'WEB1';

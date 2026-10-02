@@ -480,18 +480,20 @@ paths:
       description: >
         The machine-readable price list Croatian law requires a
         consumer-facing website to publish (Odluka o objavi cjenika, NN
-        101/2026): one row per product with a price at that point of sale
-        at `at` — its name, retail price (its latest by validity among price
-        lists already published then), whether that price applies during a
-        special form of sale, and its anchor price (the latest price flagged
-        anchored; Odluka o isticanju dodatne cijene). RFC 4180 CSV:
+        101/2026), as it stood at `at`: the price list that point of sale
+        used then (its latest assignment up to `at`), one row per product of
+        the brand with a price in it by then — its name, its latest price up
+        to `at`, whether that price applies during a special form of sale,
+        and its anchor price (the latest anchored price up to `at` among the
+        lists that point of sale has used; Odluka o isticanju dodatne
+        cijene). RFC 4180 CSV:
         comma-separated, decimal points (`2.00`), a header row, UTF-8 with a
         BOM, CRLF lines. Rebuilt from the price
         history (the `maleniti` schema) on every request, so any earlier
         version is the same request with an earlier `at` — see
         /versions. The `Content-Disposition` file name carries what the
         decision asks for: point-of-sale type, address and label, a storage
-        number (the newest price list the version draws on) and the
+        number (the price list's id) and the
         Zagreb-local date and time the version took effect, e.g.
         `Internetska prodaja_Slakovec 80_WEB1_1_2026-09-10T00-00.csv`.
         Public; CORS open to any origin.
@@ -517,14 +519,13 @@ paths:
     get:
       summary: The price list versions still to be offered
       description: >
-        Every price list published at that point of sale in the last 30 days
-        (a replaced version must stay available that long), plus the newest
-        one before them — the one in effect when the 30 days began — or, with
-        none that recent, only the newest one. Only lists with prices for
-        the brand count. Each comes with the moments its prices for the
-        brand took effect, oldest first, leaving out any still in the
-        future. Every such moment starts a version, valid until the next
-        one; GET /maleniti/v1/price-lists/{brand}?at=<moment> downloads it.
+        Every moment the point of sale's price list changed — it switched to
+        another list, or a price of the brand changed in the list it uses —
+        starts a version, valid until the next one. A version is offered
+        until 30 days after it was replaced (each replaced version must stay
+        available that long), the current one always; moments still in the
+        future aren't versions yet. Grouped by price list, oldest first.
+        GET /maleniti/v1/price-lists/{brand}?at=<moment> downloads one.
         Public; CORS open to any origin.
       operationId: getPriceListVersions
       parameters:
@@ -896,8 +897,16 @@ paths:
 
   /maleniti/v1/admin/price-lists:
     get:
-      summary: List every price list with its prices
-      description: Newest first. `published` is whether its publication time has come.
+      summary: Every price list with its versions and where it's used
+      description: >
+        A price list's products are the ones it has prices for; it keeps
+        every price it ever held, a change being a new price at the moment it
+        takes effect. Each such moment is a version: the whole list as it
+        stands then (`changed` marks the prices taking effect at it), newest
+        first. `editable` — still before its publication deadline: a change
+        has to be published by 08:00 Europe/Zagreb on the day it takes
+        effect, and can be edited until then. `earliest_valid_from` is the
+        earliest moment a new change can take effect now.
       operationId: listMalenitiPriceLists
       security: [{ bearerAuth: [] }]
       responses:
@@ -905,89 +914,185 @@ paths:
           description: OK
           content:
             application/json:
-              schema: { type: array, items: { $ref: '#/components/schemas/MalenitiPriceList' } }
+              schema: { $ref: '#/components/schemas/MalenitiPriceLists' }
         "401": { $ref: '#/components/responses/Unauthorized' }
         "403": { $ref: '#/components/responses/Forbidden' }
     post:
-      summary: Create a price list with its prices
+      summary: Create a price list
       description: >
-        A list holds the prices that change from some moment on at one point
-        of sale. `published_at` and every `valid_from` must be now or later
-        (never in the past — that would add versions that were never
-        published), and no `valid_from` before `published_at`; a missing
-        `valid_from` takes `published_at`. A list whose `published_at` has
-        come is locked from then on (see PUT).
+        Its first prices take effect at `valid_from`, which must be in the
+        future and before its publication deadline; the list is used from
+        then on at `point_of_sale_ids`, if given (or assigned later, see
+        /pos-price-lists).
       operationId: createMalenitiPriceList
       security: [{ bearerAuth: [] }]
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/MalenitiPriceListInput' }
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/MalenitiVersionInput'
+                - type: object
+                  properties:
+                    point_of_sale_ids: { type: array, items: { type: integer } }
       responses:
         "201":
           description: Created
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/MalenitiPriceList' }
-        "400": { description: A missing or invalid field (plain-text message) }
+              schema: { type: object, properties: { price_list_id: { type: integer } } }
+        "400": { description: A missing or invalid field, or a moment past its deadline (plain-text message) }
         "401": { $ref: '#/components/responses/Unauthorized' }
         "403": { $ref: '#/components/responses/Forbidden' }
-  /maleniti/v1/admin/price-lists/{price_list_id}:
+  /maleniti/v1/admin/price-lists/{price_list_id}/versions:
     parameters:
       - name: price_list_id
         in: path
         required: true
         schema: { type: integer }
-    get:
-      summary: One price list with its prices
-      operationId: getMalenitiPriceList
-      security: [{ bearerAuth: [] }]
-      responses:
-        "200":
-          description: OK
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/MalenitiPriceList' }
-        "401": { $ref: '#/components/responses/Unauthorized' }
-        "403": { $ref: '#/components/responses/Forbidden' }
-        "404": { description: Not found }
-    put:
-      summary: Replace a scheduled price list and its prices
+    post:
+      summary: Add a version ("copy")
       description: >
-        Only while it's still scheduled (`published_at` in the future): a
-        published list is part of the legal record (every version must stay
-        available as it was), so it's 409 — publish a correcting list instead.
-        Same rules as POST.
-      operationId: replaceMalenitiPriceList
+        New prices for the list's products from `valid_from` on (after its
+        latest version; in the future and before its publication deadline).
+        `prices` must name exactly the list's products — adding or removing
+        products means a new list. Only prices that change something become
+        new rows: a different amount or special-sale flag, or `anchored` (a
+        new anchor price; leaving it false keeps the current anchor).
+      operationId: addMalenitiPriceListVersion
       security: [{ bearerAuth: [] }]
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/MalenitiPriceListInput' }
+            schema: { $ref: '#/components/schemas/MalenitiVersionInput' }
+      responses:
+        "204": { description: Added }
+        "400": { description: Invalid, nothing changed, or a moment past its deadline (plain-text message) }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { description: Not found }
+  /maleniti/v1/admin/price-lists/{price_list_id}/versions/{at}:
+    parameters:
+      - name: price_list_id
+        in: path
+        required: true
+        schema: { type: integer }
+      - name: at
+        in: path
+        required: true
+        description: The version's current valid_from.
+        schema: { type: string, format: date-time }
+    put:
+      summary: Edit a version
+      description: >
+        Until its publication deadline (409 after): its moment (kept, or
+        moved to another still-publishable one between the versions around
+        it) and prices, with the same rules as adding one. Prices keep their
+        price_id; ones that no longer change anything are dropped. A list's
+        only version may also change its products.
+      operationId: editMalenitiPriceListVersion
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MalenitiVersionInput' }
+      responses:
+        "204": { description: Saved }
+        "400": { description: Invalid, nothing changed, or a moment past its deadline (plain-text message) }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { description: No such list or version }
+        "409": { description: Past its publication deadline }
+    delete:
+      summary: Withdraw a version
+      description: >
+        Until its publication deadline. A list's only version takes the list
+        with it, and its assignments to points of sale (which must still be
+        before their deadlines too); a first version with later ones can't
+        be withdrawn.
+      operationId: withdrawMalenitiPriceListVersion
+      security: [{ bearerAuth: [] }]
+      responses:
+        "204": { description: Withdrawn }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { description: No such list or version }
+        "409": { description: Past its publication deadline, or a first version with later ones }
+  /maleniti/v1/admin/pos-price-lists:
+    get:
+      summary: Which point of sale uses which price list from when
+      description: A point of sale uses its latest assigned list up to any moment. `editable` as for versions.
+      operationId: listMalenitiPosPriceLists
+      security: [{ bearerAuth: [] }]
       responses:
         "200":
           description: OK
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/MalenitiPriceList' }
-        "400": { description: A missing or invalid field (plain-text message) }
+              schema: { type: array, items: { $ref: '#/components/schemas/MalenitiPosPriceList' } }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+    post:
+      summary: Assign a price list to a point of sale from some moment
+      description: "`valid_from` in the future and before its publication deadline; one assignment per point of sale and moment."
+      operationId: createMalenitiPosPriceList
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MalenitiPosPriceList' }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MalenitiPosPriceList' }
+        "400": { description: Invalid, or a moment past its deadline (plain-text message) }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "409": { description: The point of sale already switches lists at that moment }
+  /maleniti/v1/admin/pos-price-lists/{pos_price_list_id}:
+    parameters:
+      - name: pos_price_list_id
+        in: path
+        required: true
+        schema: { type: integer }
+    put:
+      summary: Edit an assignment
+      description: Until its publication deadline; same rules as creating one (its own moment may stay).
+      operationId: replaceMalenitiPosPriceList
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MalenitiPosPriceList' }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MalenitiPosPriceList' }
+        "400": { description: Invalid, or a moment past its deadline (plain-text message) }
         "401": { $ref: '#/components/responses/Unauthorized' }
         "403": { $ref: '#/components/responses/Forbidden' }
         "404": { description: Not found }
-        "409": { description: Already published }
+        "409": { description: Past its publication deadline }
     delete:
-      summary: Delete a scheduled price list
-      description: Only while it's still scheduled; 409 once published.
-      operationId: deleteMalenitiPriceList
+      summary: Withdraw an assignment
+      description: Until its publication deadline.
+      operationId: deleteMalenitiPosPriceList
       security: [{ bearerAuth: [] }]
       responses:
-        "204": { description: Deleted }
+        "204": { description: Withdrawn }
         "401": { $ref: '#/components/responses/Unauthorized' }
         "403": { $ref: '#/components/responses/Forbidden' }
         "404": { description: Not found }
-        "409": { description: Already published }
+        "409": { description: Past its publication deadline }
 
   /contact:
     post:
@@ -1402,34 +1507,58 @@ components:
       required: [product_id, price_eur]
       properties:
         product_id: { type: integer }
-        valid_from: { type: string, format: date-time, nullable: true, description: Default the list's published_at. }
         price_eur: { type: number, example: 2.0, description: At most two decimals. }
-        anchored: { type: boolean, default: false, description: Becomes the product's anchor price from valid_from on. }
+        anchored: { type: boolean, default: false, description: An anchor price (in a later version, a new one - false keeps the current anchor). }
         special_sale: { type: boolean, default: false, description: A price during a special form of sale (posebni oblik prodaje). }
-    MalenitiPriceListInput:
+    MalenitiVersionInput:
       type: object
-      required: [point_of_sale_id, published_at, prices]
+      required: [valid_from, prices]
       properties:
-        point_of_sale_id: { type: integer }
-        published_at: { type: string, format: date-time }
+        valid_from: { type: string, format: date-time, description: When these prices take effect. }
         prices: { type: array, minItems: 1, items: { $ref: '#/components/schemas/MalenitiPriceInput' } }
-    MalenitiPriceList:
+    MalenitiPosPriceList:
+      type: object
+      required: [point_of_sale_id, price_list_id, valid_from]
+      properties:
+        pos_price_list_id: { type: integer, readOnly: true }
+        point_of_sale_id: { type: integer }
+        point_of_sale_code: { type: string, readOnly: true }
+        price_list_id: { type: integer }
+        valid_from: { type: string, format: date-time }
+        until: { type: string, format: date-time, nullable: true, readOnly: true, description: When the point of sale moved on to another list (GET /price-lists only). }
+        editable: { type: boolean, readOnly: true }
+    MalenitiPriceLists:
       type: object
       properties:
-        price_list_id: { type: integer }
-        point_of_sale_id: { type: integer }
-        point_of_sale_code: { type: string }
-        published_at: { type: string, format: date-time }
-        published: { type: boolean }
-        prices:
+        earliest_valid_from: { type: string, format: date-time }
+        price_lists:
           type: array
           items:
-            allOf:
-              - $ref: '#/components/schemas/MalenitiPriceInput'
-              - type: object
-                properties:
-                  price_id: { type: integer }
-                  product_code: { type: string }
+            type: object
+            properties:
+              price_list_id: { type: integer }
+              created_at: { type: string, format: date-time }
+              used_at: { type: array, items: { $ref: '#/components/schemas/MalenitiPosPriceList' } }
+              versions:
+                type: array
+                description: Newest first.
+                items:
+                  type: object
+                  properties:
+                    valid_from: { type: string, format: date-time }
+                    base: { type: boolean, description: The list's first version. }
+                    editable: { type: boolean }
+                    deadline: { type: string, format: date-time, description: 08:00 Europe/Zagreb on the day it takes effect. }
+                    prices:
+                      type: array
+                      items:
+                        allOf:
+                          - $ref: '#/components/schemas/MalenitiPriceInput'
+                          - type: object
+                            properties:
+                              price_id: { type: integer }
+                              product_code: { type: string }
+                              changed: { type: boolean, description: Takes effect at this version (else carried over). }
     PriceListVersions:
       type: object
       properties:
@@ -1437,15 +1566,15 @@ components:
         pointOfSale: { type: string, example: WEB1 }
         priceLists:
           type: array
-          description: Oldest first.
+          description: The price lists the point of sale used during the versions offered, oldest first.
           items:
             type: object
             properties:
               id: { type: integer }
-              publishedAt: { type: string, format: date-time }
+              usedFrom: { type: string, format: date-time, description: When the point of sale switched to it. }
               priceChanges:
                 type: array
-                description: When this list's prices for the brand took effect, oldest first.
+                description: The versions offered while it was in use — when each began, oldest first.
                 items: { type: string, format: date-time }
     ImprintInfo:
       type: object
