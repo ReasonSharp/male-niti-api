@@ -18,19 +18,25 @@ const router = express.Router();
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 // handleEmailVerificationLink() in the atodo client reads this `verify`
-// param -- see lib/atodo/links.js.
-function buildVerificationLink(token) {
- return buildFrontendLink('verify', token);
+// param -- see lib/atodo/links.js. A registration started from the landing
+// page's pricing buttons carries its plan along (next=checkout&plan=...,
+// the same params the client's own login flow continues to checkout on).
+function buildVerificationLink(token, checkoutPlan) {
+ return buildFrontendLink('verify', token, checkoutPlan ? { next: 'checkout', plan: checkoutPlan } : {});
 }
+
+const CHECKOUT_PLANS = ['monthly', 'annual'];
 
 // register/login are public and credential-guessing/spam-sensitive, same
 // spirit as POST /contact and POST /v1/quotable -- see lib/rateLimiter.js.
 router.post('/register', rateLimiter.strict, asyncHandler(async (req, res) => {
- const { email, password } = req.body || {};
+ const { email, password, checkoutPlan } = req.body || {};
 
  if (typeof email !== 'string' || !EMAIL_RE.test(email)) {
   return res.status(400).json({ code: 'INVALID_EMAIL', message: 'Enter a valid email address.' });
  }
+ // Anything else than a known plan is just an ordinary registration.
+ const plan = CHECKOUT_PLANS.includes(checkoutPlan) ? checkoutPlan : null;
  if (typeof password !== 'string' || password.length < 8) {
   return res.status(400).json({ code: 'INVALID_PASSWORD', message: 'Password must be at least 8 characters.' });
  }
@@ -46,20 +52,21 @@ router.post('/register', rateLimiter.strict, asyncHandler(async (req, res) => {
  // just overwrites it with a fresh token/password/expiry, rather than
  // erroring -- the first link may have gone missing or expired.
  await db.query(
-  `INSERT INTO atodo.pending_registrations (email, password_hash, token, created_at, expires_at)
-   VALUES ($1, $2, $3, now(), now() + interval '6 hours')
+  `INSERT INTO atodo.pending_registrations (email, password_hash, token, created_at, expires_at, checkout_plan)
+   VALUES ($1, $2, $3, now(), now() + interval '6 hours', $4)
    ON CONFLICT (email) DO UPDATE SET
     password_hash = EXCLUDED.password_hash,
     token = EXCLUDED.token,
     created_at = now(),
-    expires_at = now() + interval '6 hours'`,
-  [email, hashPassword(password), token]
+    expires_at = now() + interval '6 hours',
+    checkout_plan = EXCLUDED.checkout_plan`,
+  [email, hashPassword(password), token, plan]
  );
 
  const verificationEmail = renderEmail({
   heading: 'Verify your A-To-Do account',
   paragraphs: ['Welcome! Confirm your email address to activate your A-To-Do account. The link is valid for 6 hours.'],
-  action: { label: 'Verify your email', url: buildVerificationLink(token) },
+  action: { label: 'Verify your email', url: buildVerificationLink(token, plan) },
   afterAction: ["If you didn't sign up for A-To-Do, just ignore this email."],
  });
  sendEmail(email, 'Verify your A-To-Do account', verificationEmail.text, verificationEmail.html);
@@ -89,12 +96,19 @@ router.post('/verify-email', asyncHandler(async (req, res) => {
   return res.status(410).json({ code: 'EXPIRED', message: 'That verification link has expired. Please register again.' });
  }
 
- await db.query(
-  'INSERT INTO atodo.accounts (email, password_hash) VALUES ($1, $2) ON CONFLICT (email) DO NOTHING',
+ // Verifying is also the account's first login: the link proves the
+ // email, and the password was set moments before -- so a visitor who came
+ // to subscribe goes straight on to checkout (the link carries the plan).
+ // Only when this created the account: one that already existed (a race,
+ // or the email taken meanwhile) never gets a session from a link.
+ const { rows: created } = await db.query(
+  `INSERT INTO atodo.accounts (email, password_hash, last_login_at, last_active_at) VALUES ($1, $2, now(), now())
+   ON CONFLICT (email) DO NOTHING RETURNING *`,
   [pending.email, pending.password_hash]
  );
+ if (created.length === 0) return res.status(200).json({ email: pending.email });
 
- res.status(200).json({ email: pending.email });
+ res.status(200).json({ email: pending.email, token: issueToken(created[0]), user: toUser(created[0]) });
 }));
 
 // ---------------------------------------------------------------------------

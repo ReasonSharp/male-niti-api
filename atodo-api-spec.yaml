@@ -65,7 +65,10 @@ paths:
         erroring, since the first one may have gone missing or expired.
         Never reveals whether an email is already a *verified* account
         (that's `EMAIL_TAKEN`) vs. never registered at all -- see `login`'s
-        own description for the same principle.
+        own description for the same principle. `checkoutPlan` (from the
+        landing page's pricing buttons) makes the emailed link carry
+        `next=checkout&plan=<plan>` too, so verifying continues to checkout
+        for that plan; any other value is ignored.
       security: []
       requestBody:
         required: true
@@ -82,6 +85,9 @@ paths:
                   type: string
                   format: password
                   minLength: 8
+                checkoutPlan:
+                  type: string
+                  enum: [monthly, annual]
       responses:
         "202":
           description: Verification email sent (or re-sent).
@@ -103,8 +109,12 @@ paths:
       tags: [Auth]
       summary: Consume an email verification link's token
       description: >-
-        Promotes a pending registration to a real, loggable-into account.
-        Single-use: the token is consumed as soon as it's looked up here,
+        Promotes a pending registration to a real account and logs it in
+        (`token`/`user`, as POST /auth/login returns them -- the link proves
+        the email, the password was just chosen), so the client goes
+        straight into the app, or on to checkout when the link carries
+        `next=checkout`. Only when this created the account: an email that
+        was already an account meanwhile gets just `email`. Single-use: the token is consumed as soon as it's looked up here,
         whether or not it was still within its validity window, so
         revisiting the same link a second time always reports
         `INVALID_TOKEN` rather than re-verifying or re-expiring.
@@ -127,6 +137,8 @@ paths:
                 type: object
                 properties:
                   email: { type: string, format: email }
+                  token: { type: string, description: "A session for the new account (absent if it already existed)." }
+                  user: { $ref: "#/components/schemas/User" }
         "400":
           description: The token doesn't match any pending registration (already used, or never existed).
           content:
