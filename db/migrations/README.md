@@ -12,7 +12,7 @@ API itself never changes the schema.
 | `DEMOPUT_NNN.sql` / `DEMODEL_NNN.sql` | Demo data (`--demo`) and its removal. |
 
 Versions so far: **001** the CMS (public schema), **002** A-To-Do (`atodo`
-schema), **003** a stats reset point per task (`atodo.tasks.stats_reset_at`), **004** published price lists (`maleniti` schema: points of sale, devices, brands, products, price lists, their prices and which point of sale uses which list, with translations; seeded with the real business data). The demo data (version 002) is a free account
+schema), **003** a stats reset point per task (`atodo.tasks.stats_reset_at`), **004** published price lists (`maleniti` schema: points of sale, devices, brands, products, price lists, their prices and which point of sale uses which list, with translations; seeded with the real business data), **005** each product's landing-page place and highlight, billing interval and Stripe product. The demo data (version 002) is a free account
 `demo@a-to-do.test` / `demo-password` with a few tasks.
 
 ## Rules

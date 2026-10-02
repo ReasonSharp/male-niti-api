@@ -515,6 +515,29 @@ paths:
         "400": { description: "`VALIDATION_ERROR` — a malformed `at`, an unknown `lang`, or no point of sale given or configured" }
         "404": { description: "`NOT_FOUND` — no such brand or point of sale" }
 
+  /maleniti/v1/price-lists/{brand}/current:
+    get:
+      summary: A brand's products and prices right now, as JSON
+      description: >
+        For the brand's website — every price A-To-Do's client shows comes
+        from here, the same prices the CSV lists and checkout charges: each
+        product with a price at the point of sale now, its anchor price, and
+        how the landing page shows it (`featured_ord`: its place, null = not
+        shown; `highlight`). Public; CORS open to any origin.
+      operationId: getCurrentPrices
+      parameters:
+        - $ref: '#/components/parameters/PriceListBrand'
+        - $ref: '#/components/parameters/PriceListPointOfSale'
+        - $ref: '#/components/parameters/PriceListLanguage'
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CurrentPrices' }
+        "400": { description: "`VALIDATION_ERROR` — an unknown `lang`, or no point of sale given or configured" }
+        "404": { description: "`NOT_FOUND` — no such brand or point of sale" }
+
   /maleniti/v1/price-lists/{brand}/versions:
     get:
       summary: The price list versions still to be offered
@@ -1502,6 +1525,10 @@ components:
         brand_code: { type: string, readOnly: true }
         code: { type: string, example: atodo-pro-monthly }
         name: { $ref: '#/components/schemas/MalenitiTranslatedText' }
+        featured_ord: { type: integer, nullable: true, description: Its place on the brand's landing page; null = not shown. }
+        highlight: { type: boolean, default: false, description: Highlighted on the landing page. }
+        billing_interval: { type: string, enum: [month, year], nullable: true, description: A subscription billed every month/year; one per interval per brand. }
+        stripe_product_id: { type: string, nullable: true, example: prod_abc123, description: The Stripe Product checkout sells its subscriptions as (test and live mode differ). }
     MalenitiPriceInput:
       type: object
       required: [product_id, price_eur]
@@ -1559,6 +1586,24 @@ components:
                               price_id: { type: integer }
                               product_code: { type: string }
                               changed: { type: boolean, description: Takes effect at this version (else carried over). }
+    CurrentPrices:
+      type: object
+      properties:
+        brand: { type: string, example: atodo }
+        pointOfSale: { type: string, example: WEB1 }
+        products:
+          type: array
+          items:
+            type: object
+            properties:
+              code: { type: string, example: atodo-pro-monthly }
+              name: { type: string }
+              price_eur: { type: number, example: 2.2 }
+              anchor_eur: { type: number, nullable: true, example: 2.0 }
+              special_sale: { type: boolean }
+              featured_ord: { type: integer, nullable: true }
+              highlight: { type: boolean }
+              billing_interval: { type: string, enum: [month, year], nullable: true }
     PriceListVersions:
       type: object
       properties:

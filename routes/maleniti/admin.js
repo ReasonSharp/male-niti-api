@@ -50,15 +50,27 @@ router.use('/brands', adminResource({
  orderBy: 'code',
 }));
 
+// featured_ord/highlight: its place on the brand's landing page (null = not
+// shown); billing_interval/stripe_product_id: what checkout sells it as
+// (migration 005).
 router.use('/products', adminResource({
  table: 'maleniti.product',
  id: 'product_id',
- columns: [{ name: 'brand_id', required: true, type: 'int' }, { name: 'code', required: true }],
+ columns: [
+  { name: 'brand_id', required: true, type: 'int' },
+  { name: 'code', required: true },
+  { name: 'featured_ord', type: 'int' },
+  { name: 'highlight', type: 'bool' },
+  { name: 'billing_interval' },
+  { name: 'stripe_product_id' },
+ ],
  texts: { name: 'name_trid' },
  select: `SELECT maleniti.product.product_id, maleniti.product.brand_id, maleniti.product.code, maleniti.product.name_trid,
+                 maleniti.product.featured_ord, maleniti.product.highlight, maleniti.product.billing_interval,
+                 maleniti.product.stripe_product_id,
                  brand.code AS brand_code
           FROM maleniti.product JOIN maleniti.brand brand USING (brand_id)`,
- orderBy: 'brand.code, maleniti.product.product_id',
+ orderBy: 'brand.code, maleniti.product.featured_ord NULLS LAST, maleniti.product.product_id',
 }));
 
 // ---------------------------------------------------------------------------

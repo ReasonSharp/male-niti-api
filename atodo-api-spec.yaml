@@ -823,7 +823,10 @@ paths:
         emailed. Refused with 503 `PAYMENTS_UNAVAILABLE` before anything is
         created in Stripe whenever payments can't be fiscalized (live
         Stripe keys without a usable certificate for the production
-        fiscalization service) or Stripe isn't configured. With Stripe test
+        fiscalization service), Stripe isn't configured, or the plan has no
+        product or price to sell. The plan is charged at its price in the
+        published price list right now (the same price the website shows),
+        as the Stripe Product the price list's product names. With Stripe test
         keys, payments are always allowed; their receipts are fiscalized
         against the test service, or skipped when no certificate is set up.
       requestBody:

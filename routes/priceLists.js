@@ -1,6 +1,7 @@
 const express = require('express');
 const db = require('../db');
 const asyncHandler = require('../lib/asyncHandler');
+const { brandPricesAt } = require('../lib/maleniti/prices');
 
 // Published price lists (maleniti schema, migration 004), mounted at
 // /maleniti/v1/price-lists. Croatian law (Odluka o objavi cjenika, NN
@@ -86,9 +87,9 @@ function csvField(value) {
  return /[,"\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 }
 
-// "2.00" -- a decimal point, as NUMERIC(10, 2) comes from the database.
+// "2.00" -- a decimal point, always two decimals.
 function csvAmount(amount) {
- return amount === null ? '' : String(amount);
+ return amount === null ? '' : amount.toFixed(2);
 }
 
 // Zagreb-local "2026-09-10T08-00", for the file name (no colons, which
@@ -122,42 +123,9 @@ router.get('/:brand', asyncHandler(async (req, res) => {
  const at = parseAt(req.query.at);
  if (!at) return badRequest(res, 'at must be a date and time (ISO 8601)');
 
- const { rows: [link] } = await db.query(
-  `SELECT price_list_id, valid_from FROM maleniti.pos_price_list
-   WHERE point_of_sale_id = $1 AND date_trunc('milliseconds', valid_from) <= $2
-   ORDER BY valid_from DESC LIMIT 1`,
-  [scope.pointOfSaleId, at]
- );
- const { rows } = link ? await db.query(
-  `SELECT COALESCE(name.text, name_hr.text) AS name,
-          cur.price_eur, cur.special_sale, cur.valid_from,
-          anchor.price_eur AS anchor_eur
-   FROM maleniti.product p
-   LEFT JOIN maleniti.translation name ON name.trid = p.name_trid AND name.language_id = $3
-   LEFT JOIN maleniti.translation name_hr ON name_hr.trid = p.name_trid AND name_hr.language_id = 'hr'
-   JOIN LATERAL (
-     SELECT pr.price_eur, pr.special_sale, pr.valid_from
-     FROM maleniti.price pr
-     WHERE pr.product_id = p.product_id AND pr.price_list_id = $4
-       AND date_trunc('milliseconds', pr.valid_from) <= $5
-     ORDER BY pr.valid_from DESC
-     LIMIT 1
-   ) cur ON TRUE
-   LEFT JOIN LATERAL (
-     SELECT pr.price_eur
-     FROM maleniti.price pr
-     WHERE pr.product_id = p.product_id AND pr.anchored
-       AND date_trunc('milliseconds', pr.valid_from) <= $5
-       AND pr.price_list_id IN (
-         SELECT price_list_id FROM maleniti.pos_price_list
-         WHERE point_of_sale_id = $2 AND date_trunc('milliseconds', valid_from) <= $5)
-     ORDER BY pr.valid_from DESC
-     LIMIT 1
-   ) anchor ON TRUE
-   WHERE p.brand_id = $1
-   ORDER BY p.product_id`,
-  [scope.brandId, scope.pointOfSaleId, scope.lang, link.price_list_id, at]
- ) : { rows: [] };
+ const { priceListId, listSince, products: rows } = await brandPricesAt({
+  brandId: scope.brandId, pointOfSaleId: scope.pointOfSaleId, lang: scope.lang, at,
+ });
  const { rows: [pos] } = await db.query(
   `SELECT pos.address, COALESCE(t.text, t_hr.text) AS type
    FROM maleniti.point_of_sale pos
@@ -176,8 +144,8 @@ router.get('/:brand', asyncHandler(async (req, res) => {
 
  // This version began when the point of sale switched to the list or the
  // last of its current prices took effect, whichever came later.
- const takesEffect = rows.reduce((latest, row) => (row.valid_from > latest ? row.valid_from : latest), link ? link.valid_from : at);
- const storageNumber = link ? link.price_list_id : 0;
+ const takesEffect = rows.reduce((latest, row) => (row.valid_from > latest ? row.valid_from : latest), listSince || at);
+ const storageNumber = priceListId || 0;
  const fileName = [pos.type, pos.address, scope.posCode, storageNumber, fileTimestamp(takesEffect)].map(fileNamePart).join('_') + '.csv';
 
  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
@@ -186,6 +154,32 @@ router.get('/:brand', asyncHandler(async (req, res) => {
  res.setHeader('Cache-Control', 'no-cache');
  // With a BOM, so spreadsheet programs read it as UTF-8 too.
  res.send(`\ufeff${lines.join('\r\n')}\r\n`);
+}));
+
+// A brand's products and their prices right now, for its website (A-To-Do's
+// landing, checkout and in-app prices -- see its anchor-prices.js): every
+// product with a price at the point of sale, with its anchor price and how
+// the landing page shows it (featured_ord: its place, null = not shown;
+// highlight), and billing_interval for subscriptions. Names in `lang`.
+router.get('/:brand/current', asyncHandler(async (req, res) => {
+ const scope = await resolveScope(req, res);
+ if (!scope) return;
+ const { products } = await brandPricesAt({ brandId: scope.brandId, pointOfSaleId: scope.pointOfSaleId, lang: scope.lang });
+ res.setHeader('Cache-Control', 'no-cache');
+ res.json({
+  brand: req.params.brand,
+  pointOfSale: scope.posCode,
+  products: products.map((p) => ({
+   code: p.code,
+   name: p.name,
+   price_eur: p.price_eur,
+   anchor_eur: p.anchor_eur,
+   special_sale: p.special_sale,
+   featured_ord: p.featured_ord,
+   highlight: p.highlight,
+   billing_interval: p.billing_interval,
+  })),
+ });
 }));
 
 // The versions of a brand's price list at a point of sale still to be

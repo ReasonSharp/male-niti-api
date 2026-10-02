@@ -3,7 +3,8 @@ const crypto = require('crypto');
 const db = require('../../db');
 const asyncHandler = require('../../lib/asyncHandler');
 const { toUser, issueToken } = require('../../lib/atodo/token');
-const { getStripe, priceFor } = require('../../lib/atodo/stripe');
+const { getStripe } = require('../../lib/atodo/stripe');
+const { brandPricesAt, brandIdFor, pointOfSaleIdFor } = require('../../lib/maleniti/prices');
 const { paymentsStatus } = require('../../lib/atodo/payments');
 const { confirmCheckoutSession } = require('../../lib/atodo/billing');
 const { createPortalSession } = require('../../lib/atodo/portal');
@@ -14,17 +15,38 @@ const router = express.Router();
 
 const TRIAL_DURATION_MS = 14 * 24 * 60 * 60 * 1000;
 
+// What checkout sells for a billing interval: the subscription product of
+// the brand ATODO_BRAND names (maleniti.brand.code; the product whose
+// billing_interval matches, with its stripe_product_id) at its price right
+// now at the point of sale FISCAL_PREMISES names, from the published price
+// list -- the same price the website shows (lib/maleniti/prices.js). Null
+// with a reason when something's missing, which refuses checkout.
+const STRIPE_INTERVAL = { monthly: 'month', annual: 'year' };
+
+async function checkoutOffer(billingInterval) {
+ const brandId = await brandIdFor(process.env.ATODO_BRAND || '');
+ if (brandId === null) return { reason: `no brand '${process.env.ATODO_BRAND || ''}' (ATODO_BRAND)` };
+ const pointOfSaleId = await pointOfSaleIdFor(process.env.FISCAL_PREMISES || '');
+ if (pointOfSaleId === null) return { reason: `no point of sale '${process.env.FISCAL_PREMISES || ''}' (FISCAL_PREMISES)` };
+ const { products } = await brandPricesAt({ brandId, pointOfSaleId });
+ const product = products.find((p) => p.billing_interval === STRIPE_INTERVAL[billingInterval]);
+ if (!product) return { reason: `no ${billingInterval} product with a price at ${process.env.FISCAL_PREMISES}` };
+ if (!product.stripe_product_id) return { reason: `product ${product.code} has no stripe_product_id` };
+ if (!(product.price_eur > 0)) return { reason: `product ${product.code} has no price to charge` };
+ return { product };
+}
+
 // Croatian law (Odluka o isticanju dodatne cijene, NN 101/2026) wants every
-// price shown to consumers accompanied by its anchor price -- the regular
-// price on 10 Sept 2026, fixed from then on even if the price changes (see
-// the client's anchor-prices.js, which shows the same on its own pages).
-// Stripe's Checkout page shows the price too, so the anchor goes into its
-// custom text above the Pay button -- in both languages, since Checkout
-// picks its own from the browser.
-const ANCHOR_PRICE_TEXT = {
- monthly: 'Sidrena cijena / Anchor price: 2,00 € mjesečno / €2.00 per month. Istaknuta u skladu s hrvatskim zakonom. / Shown in accordance with Croatian law.',
- annual: 'Sidrena cijena / Anchor price: 20,00 € godišnje / €20.00 per year. Istaknuta u skladu s hrvatskim zakonom. / Shown in accordance with Croatian law.',
-};
+// price shown to consumers accompanied by its anchor price (the client's
+// anchor-prices.js shows it on its own pages). Stripe's Checkout page shows
+// the price too, so the anchor goes into its custom text above the Pay
+// button -- in both languages, since Checkout picks its own from the
+// browser.
+function anchorPriceText({ anchor_eur: anchor, billing_interval: interval }) {
+ const hr = `${anchor.toFixed(2).replace('.', ',')} € ${interval === 'year' ? 'godišnje' : 'mjesečno'}`;
+ const en = `€${anchor.toFixed(2)} per ${interval}`;
+ return `Sidrena cijena / Anchor price: ${hr} / ${en}. Istaknuta u skladu s hrvatskim zakonom. / Shown in accordance with Croatian law.`;
+}
 
 // One trial per account, and only for an account that has never had any
 // plan: not after a trial (running or lapsed), and not after a paid
@@ -85,6 +107,13 @@ router.post('/checkout-sessions', asyncHandler(async (req, res) => {
   return res.status(409).json({ code: 'ALREADY_SUBSCRIBED', message: 'This account already has an active subscription.' });
  }
 
+ const offer = await checkoutOffer(billingInterval);
+ if (!offer.product) {
+  console.error(`[atodo billing] checkout refused: ${offer.reason}`);
+  return res.status(503).json({ code: 'PAYMENTS_UNAVAILABLE', message: 'Payments are temporarily unavailable.' });
+ }
+ const { product } = offer;
+
  const stripe = getStripe();
  let customerId = account.stripe_customer_id;
  if (!customerId) {
@@ -97,7 +126,18 @@ router.post('/checkout-sessions', asyncHandler(async (req, res) => {
   mode: 'subscription',
   customer: customerId,
   client_reference_id: account.id,
-  line_items: [{ price: priceFor(billingInterval), quantity: 1 }],
+  // The price list's price, not a fixed Stripe Price: a price change in
+  // the admin app reaches new subscriptions from the moment it takes
+  // effect. (Existing subscriptions keep the price they were sold at.)
+  line_items: [{
+   price_data: {
+    currency: 'eur',
+    product: product.stripe_product_id,
+    unit_amount: Math.round(product.price_eur * 100),
+    recurring: { interval: product.billing_interval },
+   },
+   quantity: 1,
+  }],
   // We are the seller (B2C only, outside the VAT system, fiscalizing every
   // payment ourselves) -- so none of the account-level defaults that would
   // change that apply, whatever the Dashboard says:
@@ -119,7 +159,7 @@ router.post('/checkout-sessions', asyncHandler(async (req, res) => {
    // the portal configuration in lib/atodo/portal.js).
    billing_mode: { type: 'flexible' },
   },
-  custom_text: { submit: { message: ANCHOR_PRICE_TEXT[billingInterval] } },
+  custom_text: { submit: { message: anchorPriceText(product.anchor_eur === null ? { ...product, anchor_eur: product.price_eur } : product) } },
   // successUrl carries Stripe's own {CHECKOUT_SESSION_ID} placeholder (see
   // the client's checkout.js), which it fills in on the way back.
   success_url: successUrl,
