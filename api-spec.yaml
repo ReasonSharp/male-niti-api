@@ -474,6 +474,70 @@ paths:
             application/rss+xml:
               schema: { type: string }
 
+  /maleniti/v1/price-lists/{brand}:
+    get:
+      summary: A brand's price list at a point of sale, as CSV
+      description: >
+        The machine-readable price list Croatian law requires a
+        consumer-facing website to publish (Odluka o objavi cjenika, NN
+        101/2026): one row per product with a price at that point of sale
+        at `at` — its name, retail price (its latest by validity among price
+        lists already published then), whether that price applies during a
+        special form of sale, and its anchor price (the latest price flagged
+        anchored; Odluka o isticanju dodatne cijene). Semicolon-separated,
+        decimal commas, UTF-8 with a BOM, CRLF lines. Rebuilt from the price
+        history (the `maleniti` schema) on every request, so any earlier
+        version is the same request with an earlier `at` — see
+        /versions. The `Content-Disposition` file name carries what the
+        decision asks for: point-of-sale type, address and label, a storage
+        number (the newest price list the version draws on) and the
+        Zagreb-local date and time the version took effect, e.g.
+        `Internetska prodaja_Slakovec 80_WEB1_1_2026-09-10T00-00.csv`.
+        Public; CORS open to any origin.
+      operationId: getPriceList
+      parameters:
+        - $ref: '#/components/parameters/PriceListBrand'
+        - $ref: '#/components/parameters/PriceListPointOfSale'
+        - name: at
+          in: query
+          description: The moment the list is wanted for (ISO 8601). Default now.
+          schema: { type: string, format: date-time }
+        - $ref: '#/components/parameters/PriceListLanguage'
+      responses:
+        "200":
+          description: OK
+          content:
+            text/csv:
+              schema: { type: string }
+        "400": { description: "`VALIDATION_ERROR` — a malformed `at`, an unknown `lang`, or no point of sale given or configured" }
+        "404": { description: "`NOT_FOUND` — no such brand or point of sale" }
+
+  /maleniti/v1/price-lists/{brand}/versions:
+    get:
+      summary: The price list versions still to be offered
+      description: >
+        Every price list published at that point of sale in the last 30 days
+        (a replaced version must stay available that long), plus the newest
+        one before them — the one in effect when the 30 days began — or, with
+        none that recent, only the newest one. Only lists with prices for
+        the brand count. Each comes with the moments its prices for the
+        brand took effect, oldest first, leaving out any still in the
+        future. Every such moment starts a version, valid until the next
+        one; GET /maleniti/v1/price-lists/{brand}?at=<moment> downloads it.
+        Public; CORS open to any origin.
+      operationId: getPriceListVersions
+      parameters:
+        - $ref: '#/components/parameters/PriceListBrand'
+        - $ref: '#/components/parameters/PriceListPointOfSale'
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PriceListVersions' }
+        "400": { description: "`VALIDATION_ERROR` — no point of sale given or configured" }
+        "404": { description: "`NOT_FOUND` — no such brand or point of sale" }
+
   /contact:
     post:
       summary: Submit the contact form
@@ -661,6 +725,25 @@ paths:
         "404": { description: An admin API key already exists }
 
 components:
+  parameters:
+    PriceListBrand:
+      name: brand
+      in: path
+      required: true
+      description: The brand's code, e.g. `atodo`.
+      schema: { type: string }
+    PriceListPointOfSale:
+      name: pointOfSale
+      in: query
+      description: >
+        The point of sale's label (oznaka poslovnog prostora), e.g. `WEB1`.
+        Default the `FISCAL_PREMISES` this API is configured with.
+      schema: { type: string }
+    PriceListLanguage:
+      name: lang
+      in: query
+      description: Language of the names and column headers.
+      schema: { type: string, enum: [hr, en], default: hr }
   securitySchemes:
     bearerAuth:
       type: http
@@ -820,6 +903,23 @@ components:
         type: { type: string, enum: [p, h, q] }
         text: { type: string }
 
+    PriceListVersions:
+      type: object
+      properties:
+        brand: { type: string, example: atodo }
+        pointOfSale: { type: string, example: WEB1 }
+        priceLists:
+          type: array
+          description: Oldest first.
+          items:
+            type: object
+            properties:
+              id: { type: integer }
+              publishedAt: { type: string, format: date-time }
+              priceChanges:
+                type: array
+                description: When this list's prices for the brand took effect, oldest first.
+                items: { type: string, format: date-time }
     ImprintInfo:
       type: object
       description: >

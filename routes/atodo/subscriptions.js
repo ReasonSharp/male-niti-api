@@ -14,6 +14,18 @@ const router = express.Router();
 
 const TRIAL_DURATION_MS = 14 * 24 * 60 * 60 * 1000;
 
+// Croatian law (Odluka o isticanju dodatne cijene, NN 101/2026) wants every
+// price shown to consumers accompanied by its anchor price -- the regular
+// price on 10 Sept 2026, fixed from then on even if the price changes (see
+// the client's anchor-prices.js, which shows the same on its own pages).
+// Stripe's Checkout page shows the price too, so the anchor goes into its
+// custom text above the Pay button -- in both languages, since Checkout
+// picks its own from the browser.
+const ANCHOR_PRICE_TEXT = {
+ monthly: 'Sidrena cijena / Anchor price: 2,00 € mjesečno / €2.00 per month. Istaknuta u skladu s hrvatskim zakonom. / Shown in accordance with Croatian law.',
+ annual: 'Sidrena cijena / Anchor price: 20,00 € godišnje / €20.00 per year. Istaknuta u skladu s hrvatskim zakonom. / Shown in accordance with Croatian law.',
+};
+
 // One trial per account, and only for an account that has never had any
 // plan: not after a trial (running or lapsed), and not after a paid
 // subscription, even a cancelled/expired one -- those subscribe again
@@ -107,6 +119,7 @@ router.post('/checkout-sessions', asyncHandler(async (req, res) => {
    // the portal configuration in lib/atodo/portal.js).
    billing_mode: { type: 'flexible' },
   },
+  custom_text: { submit: { message: ANCHOR_PRICE_TEXT[billingInterval] } },
   // successUrl carries Stripe's own {CHECKOUT_SESSION_ID} placeholder (see
   // the client's checkout.js), which it fills in on the way back.
   success_url: successUrl,
