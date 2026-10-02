@@ -73,15 +73,20 @@ function parseAt(value) {
  return Number.isNaN(at.getTime()) ? null : at;
 }
 
+// Plain RFC 4180 CSV: comma-separated, a field quoted only when it holds a
+// comma, quote or line break. The decision (NN 101/2026) prescribes no
+// separator or number format -- just CSV or XML "suitable for automatic
+// processing" -- so it's the one every program reads the same way: a
+// semicolon/decimal-comma variant gets split on both by spreadsheets
+// set to accept either.
 function csvField(value) {
  const text = String(value ?? '');
- return /[;"\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+ return /[,"\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 }
 
-// "2,00" -- a decimal comma, as Croatian prices are written; the fields are
-// separated by semicolons for the same reason.
+// "2.00" -- a decimal point, as NUMERIC(10, 2) comes from the database.
 function csvAmount(amount) {
- return amount === null ? '' : String(amount).replace('.', ',');
+ return amount === null ? '' : String(amount);
 }
 
 // Zagreb-local "2026-09-10T08-00", for the file name (no colons, which
@@ -151,9 +156,9 @@ router.get('/:brand', asyncHandler(async (req, res) => {
 
  const header = CSV_HEADERS[scope.lang] || CSV_HEADERS.hr;
  const [yes, no] = YES_NO[scope.lang] || YES_NO.hr;
- const lines = [header.map(csvField).join(';')];
+ const lines = [header.map(csvField).join(',')];
  for (const row of rows) {
-  lines.push([row.name, csvAmount(row.price_eur), row.special_sale ? yes : no, csvAmount(row.anchor_eur)].map(csvField).join(';'));
+  lines.push([row.name, csvAmount(row.price_eur), row.special_sale ? yes : no, csvAmount(row.anchor_eur)].map(csvField).join(','));
  }
 
  const takesEffect = rows.reduce((latest, row) => (row.valid_from > latest ? row.valid_from : latest), rows.length ? rows[0].valid_from : at);

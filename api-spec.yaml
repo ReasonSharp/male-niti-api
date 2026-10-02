@@ -484,8 +484,9 @@ paths:
         at `at` — its name, retail price (its latest by validity among price
         lists already published then), whether that price applies during a
         special form of sale, and its anchor price (the latest price flagged
-        anchored; Odluka o isticanju dodatne cijene). Semicolon-separated,
-        decimal commas, UTF-8 with a BOM, CRLF lines. Rebuilt from the price
+        anchored; Odluka o isticanju dodatne cijene). RFC 4180 CSV:
+        comma-separated, decimal points (`2.00`), a header row, UTF-8 with a
+        BOM, CRLF lines. Rebuilt from the price
         history (the `maleniti` schema) on every request, so any earlier
         version is the same request with an earlier `at` — see
         /versions. The `Content-Disposition` file name carries what the
@@ -537,6 +538,456 @@ paths:
               schema: { $ref: '#/components/schemas/PriceListVersions' }
         "400": { description: "`VALIDATION_ERROR` — no point of sale given or configured" }
         "404": { description: "`NOT_FOUND` — no such brand or point of sale" }
+
+  /maleniti/v1/admin/languages:
+    get:
+      summary: List languages
+      operationId: listMalenitiLanguages
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/MalenitiLanguage' } }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+    post:
+      summary: Create one of the languages
+      description: >
+        The code (`language_id`) is given here and can't be changed afterwards; deleting a language any text still uses is refused.
+      operationId: createMalenitiLanguage
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MalenitiLanguage' }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MalenitiLanguage' }
+        "400": { description: A missing or invalid field (plain-text message) }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "409": { description: A duplicate, or a reference to something that does not exist }
+  /maleniti/v1/admin/languages/{language_id}:
+    parameters:
+      - name: language_id
+        in: path
+        required: true
+        schema: { type: string }
+    put:
+      summary: Replace one of the languages
+      operationId: replaceMalenitiLanguage
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MalenitiLanguage' }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MalenitiLanguage' }
+        "400": { description: A missing or invalid field (plain-text message) }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { description: Not found }
+        "409": { description: A duplicate, or a reference to something that does not exist }
+    delete:
+      summary: Delete one of the languages
+      operationId: deleteMalenitiLanguage
+      security: [{ bearerAuth: [] }]
+      responses:
+        "204": { description: Deleted (with its translated texts) }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { description: Not found }
+        "409": { description: Still in use by another row (plain-text message naming it) }
+
+  /maleniti/v1/admin/points-of-sale:
+    get:
+      summary: List points of sale
+      operationId: listMalenitiPointOfSales
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/MalenitiPointOfSale' } }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+    post:
+      summary: Create one of the points of sale
+      description: >
+        `type` is a translated text; Croatian (`hr`) required.
+      operationId: createMalenitiPointOfSale
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MalenitiPointOfSale' }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MalenitiPointOfSale' }
+        "400": { description: A missing or invalid field (plain-text message) }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "409": { description: A duplicate, or a reference to something that does not exist }
+  /maleniti/v1/admin/points-of-sale/{point_of_sale_id}:
+    parameters:
+      - name: point_of_sale_id
+        in: path
+        required: true
+        schema: { type: integer }
+    put:
+      summary: Replace one of the points of sale
+      operationId: replaceMalenitiPointOfSale
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MalenitiPointOfSale' }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MalenitiPointOfSale' }
+        "400": { description: A missing or invalid field (plain-text message) }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { description: Not found }
+        "409": { description: A duplicate, or a reference to something that does not exist }
+    delete:
+      summary: Delete one of the points of sale
+      operationId: deleteMalenitiPointOfSale
+      security: [{ bearerAuth: [] }]
+      responses:
+        "204": { description: Deleted (with its translated texts) }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { description: Not found }
+        "409": { description: Still in use by another row (plain-text message naming it) }
+
+  /maleniti/v1/admin/devices:
+    get:
+      summary: List fiscal devices
+      operationId: listMalenitiDevices
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/MalenitiDevice' } }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+    post:
+      summary: Create one of the fiscal devices
+      description: >
+        A device number, unique per point of sale.
+      operationId: createMalenitiDevice
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MalenitiDevice' }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MalenitiDevice' }
+        "400": { description: A missing or invalid field (plain-text message) }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "409": { description: A duplicate, or a reference to something that does not exist }
+  /maleniti/v1/admin/devices/{device_id}:
+    parameters:
+      - name: device_id
+        in: path
+        required: true
+        schema: { type: integer }
+    put:
+      summary: Replace one of the fiscal devices
+      operationId: replaceMalenitiDevice
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MalenitiDevice' }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MalenitiDevice' }
+        "400": { description: A missing or invalid field (plain-text message) }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { description: Not found }
+        "409": { description: A duplicate, or a reference to something that does not exist }
+    delete:
+      summary: Delete one of the fiscal devices
+      operationId: deleteMalenitiDevice
+      security: [{ bearerAuth: [] }]
+      responses:
+        "204": { description: Deleted (with its translated texts) }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { description: Not found }
+        "409": { description: Still in use by another row (plain-text message naming it) }
+
+  /maleniti/v1/admin/brands:
+    get:
+      summary: List brands
+      operationId: listMalenitiBrands
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/MalenitiBrand' } }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+    post:
+      summary: Create one of the brands
+      description: >
+        `code` names the brand in the public price list URL; `name` is a translated text.
+      operationId: createMalenitiBrand
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MalenitiBrand' }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MalenitiBrand' }
+        "400": { description: A missing or invalid field (plain-text message) }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "409": { description: A duplicate, or a reference to something that does not exist }
+  /maleniti/v1/admin/brands/{brand_id}:
+    parameters:
+      - name: brand_id
+        in: path
+        required: true
+        schema: { type: integer }
+    put:
+      summary: Replace one of the brands
+      operationId: replaceMalenitiBrand
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MalenitiBrand' }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MalenitiBrand' }
+        "400": { description: A missing or invalid field (plain-text message) }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { description: Not found }
+        "409": { description: A duplicate, or a reference to something that does not exist }
+    delete:
+      summary: Delete one of the brands
+      operationId: deleteMalenitiBrand
+      security: [{ bearerAuth: [] }]
+      responses:
+        "204": { description: Deleted (with its translated texts) }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { description: Not found }
+        "409": { description: Still in use by another row (plain-text message naming it) }
+
+  /maleniti/v1/admin/products:
+    get:
+      summary: List products
+      operationId: listMalenitiProducts
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/MalenitiProduct' } }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+    post:
+      summary: Create one of the products
+      description: >
+        `name` is a translated text — as the published price list shows it.
+      operationId: createMalenitiProduct
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MalenitiProduct' }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MalenitiProduct' }
+        "400": { description: A missing or invalid field (plain-text message) }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "409": { description: A duplicate, or a reference to something that does not exist }
+  /maleniti/v1/admin/products/{product_id}:
+    parameters:
+      - name: product_id
+        in: path
+        required: true
+        schema: { type: integer }
+    put:
+      summary: Replace one of the products
+      operationId: replaceMalenitiProduct
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MalenitiProduct' }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MalenitiProduct' }
+        "400": { description: A missing or invalid field (plain-text message) }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { description: Not found }
+        "409": { description: A duplicate, or a reference to something that does not exist }
+    delete:
+      summary: Delete one of the products
+      operationId: deleteMalenitiProduct
+      security: [{ bearerAuth: [] }]
+      responses:
+        "204": { description: Deleted (with its translated texts) }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { description: Not found }
+        "409": { description: Still in use by another row (plain-text message naming it) }
+
+  /maleniti/v1/admin/price-lists:
+    get:
+      summary: List every price list with its prices
+      description: Newest first. `published` is whether its publication time has come.
+      operationId: listMalenitiPriceLists
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/MalenitiPriceList' } }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+    post:
+      summary: Create a price list with its prices
+      description: >
+        A list holds the prices that change from some moment on at one point
+        of sale. `published_at` and every `valid_from` must be now or later
+        (never in the past — that would add versions that were never
+        published), and no `valid_from` before `published_at`; a missing
+        `valid_from` takes `published_at`. A list whose `published_at` has
+        come is locked from then on (see PUT).
+      operationId: createMalenitiPriceList
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MalenitiPriceListInput' }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MalenitiPriceList' }
+        "400": { description: A missing or invalid field (plain-text message) }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+  /maleniti/v1/admin/price-lists/{price_list_id}:
+    parameters:
+      - name: price_list_id
+        in: path
+        required: true
+        schema: { type: integer }
+    get:
+      summary: One price list with its prices
+      operationId: getMalenitiPriceList
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MalenitiPriceList' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { description: Not found }
+    put:
+      summary: Replace a scheduled price list and its prices
+      description: >
+        Only while it's still scheduled (`published_at` in the future): a
+        published list is part of the legal record (every version must stay
+        available as it was), so it's 409 — publish a correcting list instead.
+        Same rules as POST.
+      operationId: replaceMalenitiPriceList
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MalenitiPriceListInput' }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MalenitiPriceList' }
+        "400": { description: A missing or invalid field (plain-text message) }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { description: Not found }
+        "409": { description: Already published }
+    delete:
+      summary: Delete a scheduled price list
+      description: Only while it's still scheduled; 409 once published.
+      operationId: deleteMalenitiPriceList
+      security: [{ bearerAuth: [] }]
+      responses:
+        "204": { description: Deleted }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { description: Not found }
+        "409": { description: Already published }
 
   /contact:
     post:
@@ -903,6 +1354,82 @@ components:
         type: { type: string, enum: [p, h, q] }
         text: { type: string }
 
+    MalenitiTranslatedText:
+      type: object
+      description: One text per language (`maleniti.language`); Croatian required.
+      additionalProperties: { type: string }
+      example: { hr: Internetska prodaja, en: Online sales }
+    MalenitiLanguage:
+      type: object
+      required: [language_id, name]
+      properties:
+        language_id: { type: string, example: hr }
+        name: { type: string, example: hrvatski }
+    MalenitiPointOfSale:
+      type: object
+      required: [code, type, address]
+      properties:
+        point_of_sale_id: { type: integer, readOnly: true }
+        code: { type: string, example: WEB1, description: oznaka poslovnog prostora }
+        type: { $ref: '#/components/schemas/MalenitiTranslatedText' }
+        address: { type: string, example: Slakovec 80 }
+    MalenitiDevice:
+      type: object
+      required: [point_of_sale_id, device_number]
+      properties:
+        device_id: { type: integer, readOnly: true }
+        point_of_sale_id: { type: integer }
+        point_of_sale_code: { type: string, readOnly: true }
+        device_number: { type: integer, example: 1 }
+    MalenitiBrand:
+      type: object
+      required: [code, name]
+      properties:
+        brand_id: { type: integer, readOnly: true }
+        code: { type: string, example: atodo }
+        name: { $ref: '#/components/schemas/MalenitiTranslatedText' }
+    MalenitiProduct:
+      type: object
+      required: [brand_id, code, name]
+      properties:
+        product_id: { type: integer, readOnly: true }
+        brand_id: { type: integer }
+        brand_code: { type: string, readOnly: true }
+        code: { type: string, example: atodo-pro-monthly }
+        name: { $ref: '#/components/schemas/MalenitiTranslatedText' }
+    MalenitiPriceInput:
+      type: object
+      required: [product_id, price_eur]
+      properties:
+        product_id: { type: integer }
+        valid_from: { type: string, format: date-time, nullable: true, description: Default the list's published_at. }
+        price_eur: { type: number, example: 2.0, description: At most two decimals. }
+        anchored: { type: boolean, default: false, description: Becomes the product's anchor price from valid_from on. }
+        special_sale: { type: boolean, default: false, description: A price during a special form of sale (posebni oblik prodaje). }
+    MalenitiPriceListInput:
+      type: object
+      required: [point_of_sale_id, published_at, prices]
+      properties:
+        point_of_sale_id: { type: integer }
+        published_at: { type: string, format: date-time }
+        prices: { type: array, minItems: 1, items: { $ref: '#/components/schemas/MalenitiPriceInput' } }
+    MalenitiPriceList:
+      type: object
+      properties:
+        price_list_id: { type: integer }
+        point_of_sale_id: { type: integer }
+        point_of_sale_code: { type: string }
+        published_at: { type: string, format: date-time }
+        published: { type: boolean }
+        prices:
+          type: array
+          items:
+            allOf:
+              - $ref: '#/components/schemas/MalenitiPriceInput'
+              - type: object
+                properties:
+                  price_id: { type: integer }
+                  product_code: { type: string }
     PriceListVersions:
       type: object
       properties:

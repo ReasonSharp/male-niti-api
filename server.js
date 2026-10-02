@@ -24,6 +24,8 @@ const apiKeysRouter = require('./routes/apiKeys');
 const imprintRouter = require('./routes/imprint');
 const feedRouter = require('./routes/feed');
 const priceListsRouter = require('./routes/priceLists');
+const malenitiAdminRouter = require('./routes/maleniti/admin');
+const requireSuperAdmin = require('./lib/requireSuperAdmin');
 const atodoRouter = require('./routes/atodo');
 const atodoDocsRouter = require('./routes/atodo/docs');
 const atodoCors = require('./lib/atodo/cors');
@@ -68,6 +70,7 @@ app.use('/api-keys', apiKeysRouter);
 app.use('/imprint', imprintRouter);
 app.use('/feed.xml', feedRouter);
 app.use('/maleniti/v1/price-lists', priceListsRouter);
+app.use('/maleniti/v1/admin', requireSuperAdmin, malenitiAdminRouter);
 app.use('/atodo/v1/api-docs', atodoDocsRouter);
 app.use('/atodo/v1', atodoRouter);
 
