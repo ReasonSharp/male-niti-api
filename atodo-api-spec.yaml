@@ -879,7 +879,12 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "409":
-          description: The account already has an active, renewing Pro subscription.
+          description: >-
+            The account already has a paid-up Pro subscription -- a second one
+            would charge again for time already paid for. `ALREADY_SUBSCRIBED`
+            while it renews; `SUBSCRIPTION_CANCELLING` once cancelled but
+            still running, which `POST /subscriptions/resume` takes back
+            instead (charging nothing until its period ends).
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -1037,6 +1042,44 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
               example: { code: NO_ACTIVE_SUBSCRIPTION, message: "There's no active subscription to cancel." }
+
+  /subscriptions/resume:
+    post:
+      tags: [Subscriptions]
+      summary: Resume a cancelled subscription before its period ends
+      description: >-
+        Undoes a cancellation (`POST /subscriptions/cancel`, or one made in
+        Stripe's Customer Portal) while the paid period is still running:
+        the subscription renews again at `expiresAt`, as if never cancelled.
+        Nothing is charged now. Also calls off a scheduled account deletion
+        (`POST /users/me/schedule-deletion`), since renewing an account due
+        for deletion makes no sense.
+      responses:
+        "200":
+          description: Resumed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token: { $ref: "#/components/schemas/Token" }
+                  user: { $ref: "#/components/schemas/User" }
+        "401":
+          description: Missing/invalid bearer token.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: No cancelled, still-active subscription to resume.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              example: { code: NO_CANCELLED_SUBSCRIPTION, message: "There's no cancelled, still-active subscription to resume." }
+        "503":
+          description: Stripe isn't configured.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
 
 components:
   securitySchemes:

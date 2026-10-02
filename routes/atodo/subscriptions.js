@@ -99,10 +99,16 @@ router.post('/checkout-sessions', asyncHandler(async (req, res) => {
  const { rows } = await db.query('SELECT * FROM atodo.accounts WHERE id = $1', [req.atodoAuth.id]);
  if (rows.length === 0) return res.status(401).json({ code: 'UNAUTHENTICATED', message: 'Missing or invalid bearer token.' });
  const account = rows[0];
+ // A paid-up subscription, cancelled or not, refuses a second one: it would
+ // charge again for time already paid for. A cancelled one is resumed
+ // instead (POST /subscriptions/resume), which charges nothing until its
+ // period ends.
  const hasActivePro = account.subscription_plan === 'pro'
   && account.stripe_subscription_id
-  && new Date(account.subscription_expires_at).getTime() > Date.now()
-  && !account.subscription_cancel_at_period_end;
+  && new Date(account.subscription_expires_at).getTime() > Date.now();
+ if (hasActivePro && account.subscription_cancel_at_period_end) {
+  return res.status(409).json({ code: 'SUBSCRIPTION_CANCELLING', message: 'This account has a cancelled subscription that is still active - resume it instead.' });
+ }
  if (hasActivePro) {
   return res.status(409).json({ code: 'ALREADY_SUBSCRIBED', message: 'This account already has an active subscription.' });
  }
@@ -250,6 +256,43 @@ router.post('/cancel', asyncHandler(async (req, res) => {
   [account.id]
  );
 
+ res.json({ token: issueToken(updated[0]), user: toUser(updated[0]) });
+}));
+
+// Undoes a cancellation while the paid period is still running: the
+// subscription renews again at its end, as if never cancelled -- nothing is
+// charged now. Resuming also keeps the account (a scheduled deletion,
+// which cancelled the subscription in the first place, is called off), since
+// renewing an account due for deletion makes no sense.
+router.post('/resume', asyncHandler(async (req, res) => {
+ const { rows } = await db.query('SELECT * FROM atodo.accounts WHERE id = $1', [req.atodoAuth.id]);
+ if (rows.length === 0) return res.status(401).json({ code: 'UNAUTHENTICATED', message: 'Missing or invalid bearer token.' });
+ const account = rows[0];
+ const resumable = account.subscription_plan === 'pro'
+  && account.stripe_subscription_id
+  && account.subscription_cancel_at_period_end
+  && new Date(account.subscription_expires_at).getTime() > Date.now();
+ if (!resumable) {
+  return res.status(409).json({ code: 'NO_CANCELLED_SUBSCRIPTION', message: "There's no cancelled, still-active subscription to resume." });
+ }
+ const stripe = getStripe();
+ if (!stripe) return res.status(503).json({ code: 'PAYMENTS_UNAVAILABLE', message: 'Payments are temporarily unavailable.' });
+
+ // Cancelled either way Stripe knows: at the period end (our own cancel,
+ // the Customer Portal) or at a set moment (cancel_at) -- each undone its
+ // own way.
+ const sub = await stripe.subscriptions.retrieve(account.stripe_subscription_id);
+ if (!['active', 'trialing', 'past_due'].includes(sub.status)) {
+  return res.status(409).json({ code: 'NO_CANCELLED_SUBSCRIPTION', message: 'This subscription has already ended.' });
+ }
+ if (sub.cancel_at_period_end) await stripe.subscriptions.update(sub.id, { cancel_at_period_end: false });
+ else if (sub.cancel_at) await stripe.subscriptions.update(sub.id, { cancel_at: '' });
+
+ const { rows: updated } = await db.query(
+  `UPDATE atodo.accounts SET subscription_cancel_at_period_end = false, subscription_scheduled_deletion = false
+   WHERE id = $1 RETURNING *`,
+  [account.id]
+ );
  res.json({ token: issueToken(updated[0]), user: toUser(updated[0]) });
 }));
 
