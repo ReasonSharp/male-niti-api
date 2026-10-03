@@ -55,6 +55,12 @@ app.use(requireDbInSync);
 app.use(checkBanned);
 // Before express.json(): Stripe's signature check needs the raw body.
 app.post('/atodo/v1/stripe/webhook', express.raw({ type: 'application/json' }), atodoStripeWebhook);
+// PUT /atodo/v1/tasks sends an account's whole task list at once (every
+// task, occurrence, note and log entry -- see that route), which outgrows
+// express.json()'s 100 kB default for a well-used account; everything else
+// keeps the default. The TLS proxy allows the same for /atodo/v1/ (see
+// male-niti's tlsoffloader.conf, client_max_body_size).
+app.put('/atodo/v1/tasks', express.json({ limit: '10mb' }));
 app.use(express.json());
 app.use(authenticate);
 app.use(rateLimiter.general);
@@ -73,6 +79,20 @@ app.use('/maleniti/v1/price-lists', priceListsRouter);
 app.use('/maleniti/v1/admin', requireSuperAdmin, malenitiAdminRouter);
 app.use('/atodo/v1/api-docs', atodoDocsRouter);
 app.use('/atodo/v1', atodoRouter);
+
+// A body over its limit (see express.json above) or not valid JSON: the
+// same { code, message } JSON errors the A-To-Do client reads, rather than
+// Express's default HTML page with a stack trace.
+app.use((err, req, res, next) => {
+ if (err.type === 'entity.too.large') {
+  console.error(`[request] ${req.method} ${req.originalUrl}: body of ${err.length} bytes is over the ${err.limit}-byte limit`);
+  return res.status(413).json({ code: 'PAYLOAD_TOO_LARGE', message: 'The request is too large.' });
+ }
+ if (err.type === 'entity.parse.failed') {
+  return res.status(400).json({ code: 'INVALID_JSON', message: 'The request body is not valid JSON.' });
+ }
+ next(err);
+});
 
 // Payments need Stripe AND fiscalization -- say plainly at startup whether
 // they're on, and keep re-sending any receipt still waiting for its JIR.
