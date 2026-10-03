@@ -19,6 +19,8 @@ COPY ./lib ./lib
 COPY ./scripts ./scripts
 
 FROM node:20.7.0-alpine3.17
+# A-To-Do's domain rules expect a UTC process clock (see server.js).
+ENV TZ=UTC
 # The platform version this image was built as (e.g. 2026.09.27.1; `dev` for
 # untagged builds) -- reported by GET /health.
 ARG VERSION=dev

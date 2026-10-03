@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "nodemon server.js",
     "prod": "nodemon server.js",
-    "create-api-key": "node scripts/create-api-key.js"
+    "create-api-key": "node scripts/create-api-key.js",
+    "test": "node test/run.js"
   },
   "keywords": [],
   "author": "",

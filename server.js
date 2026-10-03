@@ -1,3 +1,8 @@
+// A-To-Do's domain rules use JavaScript's "local" time as a plain wall clock
+// and apply each request's own time zone themselves (lib/atodo/domain/
+// clock.js) -- so the process itself runs on UTC, whatever the host says.
+process.env.TZ = 'UTC';
+
 const path = require('path');
 require('dotenv').config({
  path: path.resolve('.', './.env')
