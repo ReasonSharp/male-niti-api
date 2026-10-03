@@ -170,4 +170,18 @@ const throwsCode = (fn, code, message) => assert.throws(fn, (err) => err.code ==
  assert.strictEqual(state.countsTowardStats(daily, '2026-10-05'), true, 'today still does');
 }
 
+// --- Dragging a fixed-zone task on the agenda ----------------------------------------
+
+{
+ const ny = task({ id: 'ny', dueDate: '2026-10-01', allDay: false, dueTime: '09:00', timeZone: 'America/New_York' });
+ const state = makeState({ tasks: [ny], at: '2026-10-05T09:00' });
+ // Zagreb is 6 hours ahead of New York in October: 16:00 local is 10:00 there.
+ state.setDueTime('ny', '16:00');
+ assert.strictEqual(ny.dueTime, '10:00', 'local time converted to the task zone');
+ const fluid = task({ id: 'fluid', dueDate: '2026-10-01', allDay: false, dueTime: '09:00' });
+ const state2 = makeState({ tasks: [fluid], at: '2026-10-05T09:00' });
+ state2.setDueTime('fluid', '16:00');
+ assert.strictEqual(fluid.dueTime, '16:00', 'a fluid task takes it as is');
+}
+
 console.log('account.test.js: all assertions passed');

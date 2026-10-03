@@ -88,9 +88,11 @@ router.delete('/:taskId', action((req, state) => {
  state.deleteTask(req.params.taskId);
 }));
 
-// The agenda's drag-to-reschedule.
+// The agenda's drag-to-reschedule: dueTime in the user's local time, on
+// `date` (the agenda's day, default today).
 router.put('/:taskId/due-time', action((req, state) => {
- state.setDueTime(req.params.taskId, v.time(body(req).dueTime, 'dueTime'));
+ const b = body(req);
+ state.setDueTime(req.params.taskId, v.time(b.dueTime, 'dueTime'), b.date ? v.date(b.date, 'date') : undefined);
 }));
 
 router.post('/:taskId/pause', action((req, state) => {
