@@ -50,11 +50,29 @@ const itemsOn = (state, view, date) => {
  assert.deepStrictEqual(itemsOn(state, 'pending', '2026-10-05'), ['daily@2026-10-05+done'], 'pending: today\'s shown done');
  assert.strictEqual(dayView(state, 'next-recurrence', '2026-10-05').nextDate, '2026-10-06', 'next-recurrence previews what\'s next once today is done');
 
- // A day later, yesterday's completed occurrence shows once more and is dismissed.
+ // A day later, yesterday's completed occurrence is dismissed, not shown.
  advance(state, '2026-10-06T09:00');
- assert.deepStrictEqual(itemsOn(state, 'next-recurrence', '2026-10-05'), ['daily@2026-10-05+done'], 'next-recurrence: completed prior shown once');
- assert.strictEqual(state.findOccurrence(daily, '2026-10-05').dismissed, true, '...and dismissed');
- assert.strictEqual(dayView(state, 'next-recurrence', '2026-10-05').date, '2026-10-06', '...then gone: the nearest day with items is today');
+ assert.deepStrictEqual(itemsOn(state, 'next-recurrence', '2026-10-05'), [], 'next-recurrence: completed prior done a while ago isn\'t shown');
+ assert.strictEqual(state.findOccurrence(daily, '2026-10-05').dismissed, true, '...and is dismissed');
+}
+
+// --- Checking off a carried-over occurrence in next-recurrence: shown a moment, then gone ---
+
+{
+ const daily = task({ id: 'daily', dueDate: '2026-10-01', dueTime: '08:00' });
+ const state = makeState({ tasks: [daily], at: '2026-10-05T09:00' });
+ assert.deepStrictEqual(itemsOn(state, 'next-recurrence', '2026-10-04'), ['daily@2026-10-04+overdue'], 'yesterday carried over');
+ state.complete('daily', '2026-10-04');
+ const { makeClock } = require('../../lib/atodo/domain/clock');
+ const later = (ms) => {
+  state.clock = makeClock(state.clock.timeZone, state.clock.nowMs + ms);
+ };
+ later(2000);
+ assert.deepStrictEqual(itemsOn(state, 'next-recurrence', '2026-10-04'), ['daily@2026-10-04+done'], 'just checked off: still shown, done');
+ assert.strictEqual(state.findOccurrence(daily, '2026-10-04').dismissed, false, '...not dismissed yet');
+ later(4000);
+ assert.deepStrictEqual(itemsOn(state, 'next-recurrence', '2026-10-04'), [], 'a few seconds later: gone');
+ assert.strictEqual(state.findOccurrence(daily, '2026-10-04').dismissed, true, '...dismissed');
 }
 
 // --- Stale carried-over occurrences are dismissed on their own ----------------
