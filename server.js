@@ -67,6 +67,7 @@ app.post('/atodo/v1/imports/:importId/chunks', express.json({ limit: '1mb' }));
 app.use(express.json());
 app.use(authenticate);
 app.use(rateLimiter.general);
+app.use(rateLimiter.atodoReads);
 
 app.use('/services', servicesRouter);
 app.use('/pricing', pricingRouter);
