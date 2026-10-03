@@ -19,11 +19,27 @@ info:
     returns a freshly issued token in place of the old one; the client is
     expected to discard the old one immediately.
 
+    The to-do list's rules (recurrence, overdue/failed, carried-over and
+    recur-until-completed chains, timers, the free plan's limits) run here,
+    not in the client. The client reads what it shows -- one local day of a
+    list at a time (`GET /days`), the agenda, one task, Manage Tasks, stats
+    -- and changes things through one action endpoint per change (complete
+    an occurrence, edit a task's details, change its pattern, pause it,
+    ...), each answering with what changed (`ActionResult`). Every such
+    request first brings the account up to date (timers that ran out,
+    missed occurrences), so a read can change stored state too; requests
+    for one account are serialized.
+
+    Time zones: every request carries the user's zone (`X-Timezone`), and
+    every date and time the client sends or gets is the user's local one --
+    except where a task fixed to another zone shows its own time
+    (`Item.zoneDueTime`) and the occurrence dates actions address it by.
+
     Every error response uses the same `Error` schema (`{ code, message }`).
     `code` is a stable, machine-readable identifier the client branches on
     (e.g. to show a specific translated message); `message` is a
     human-readable fallback, not meant to be shown as-is in a finished UI.
-  version: "1.0.0"
+  version: "2.0.0"
 externalDocs:
   description: Client-side implementation notes
   url: ./CLAUDE.md
@@ -47,8 +63,12 @@ tags:
     description: Registration, email verification, login, and the current session.
   - name: Users
     description: The authenticated account's own profile, preferences, and deletion.
+  - name: Lists
+    description: The to-do list a day at a time, the agenda, focus, Manage Tasks, stats and the export.
   - name: Tasks
-    description: The authenticated account's to-do list.
+    description: One task -- its details, and an action endpoint per change to it or one of its occurrences.
+  - name: Imports
+    description: Data imports, uploaded in chunks.
   - name: Subscriptions
     description: Trial/paid subscription lifecycle, including the Stripe checkout handoff.
   - name: Support
@@ -450,11 +470,11 @@ paths:
       description: >-
         Partial update -- send only the fields you're changing. Covers
         everything Settings can change (nickname, avatar, time format,
-        background, language, theme, first day of the week) plus the small bits of session state the
-        client persists across reloads (which task is currently
-        active/focused, and the to-do list's current view mode). None of
-        this affects the bearer token's own claims, so the token stays
-        valid and unchanged.
+        background, language, theme, first day of the week) plus the to-do
+        list's current view mode. (The focused occurrence is set through
+        `PUT`/`DELETE /focus`, which keep its timer and focus time.) None of
+        this affects the bearer token's own claims, so the token stays valid
+        and unchanged.
       requestBody:
         required: true
         content:
@@ -482,13 +502,6 @@ paths:
                   type: integer
                   minimum: 0
                   maximum: 6
-                  nullable: true
-                activeTaskId:
-                  type: string
-                  nullable: true
-                activeOccurrenceDate:
-                  type: string
-                  format: date
                   nullable: true
                 todoViewMode:
                   type: string
@@ -690,64 +703,963 @@ paths:
               schema: { $ref: "#/components/schemas/Error" }
               example: { code: NO_SUBSCRIPTION, message: "There's no subscription to cancel deletion for." }
 
-  /tasks:
+  # ---------------------------------------------------------------------------
+  # The to-do list: reads computed server-side, one local day at a time
+  # ---------------------------------------------------------------------------
+
+  /days:
     get:
-      tags: [Tasks]
-      summary: Fetch every task and occurrence belonging to the current account
+      tags: [Lists]
+      summary: One local day of a list view
       description: >-
-        Returns the account's entire task list and occurrence history in one
-        call -- realistic for a personal to-do list's scale, and simpler
-        than paginating a collection that's meant to all be visible/editable
-        in one screen anyway. `tasks` are recurrence *patterns*; `occurrences`
-        are the sparse, per-date record of what's actually happened to a
-        given task's individual occurrences (see the `Occurrence` schema) --
-        an occurrence with nothing recorded against it yet (still pending,
-        no note, no override) has no row here at all.
+        The items one view shows on one of the user's local days -- or, if
+        that day has none, on the nearest day that has some in `direction`
+        -- with the nearest days that have items either side of it. The
+        client loads its list a day at a time this way: from today (or the
+        1st of another month), as far as the screen needs, and more as it
+        scrolls. `previousDate`/`nextDate` are given even across a month
+        boundary; whether to follow them is the client's call ("pending" and
+        "all" are paged by month, "next-recurrence" isn't).
+
+
+        The views: `pending` -- every overdue or failed occurrence since the
+        start of the date's month, dismissed or not, plus (in the current
+        month) today's and tomorrow's; `next-recurrence` -- per task, today's
+        occurrence, the previous one while unresolved and not dismissed (a
+        resolved one is shown once, then dismissed), the next one when
+        neither is pending, and from 18:00 tomorrow's; `all` -- every
+        occurrence in the date's month. Within a day, items come in display
+        order: all-day first, then by due time, then by name. A free account
+        also gets the subscription reminder on today (see `Item.virtual`).
+      parameters:
+        - { $ref: "#/components/parameters/XTimezone" }
+        - name: view
+          in: query
+          schema: { type: string, enum: [pending, next-recurrence, all], default: pending }
+        - name: date
+          in: query
+          description: A local date; default today.
+          schema: { type: string, format: date }
+        - name: direction
+          in: query
+          description: Where to look when `date` has nothing.
+          schema: { type: string, enum: [after, before], default: after }
       responses:
         "200":
-          description: The account's tasks and occurrences.
+          description: The day.
           content:
             application/json:
               schema:
-                type: object
-                required: [tasks, occurrences]
-                properties:
-                  tasks:
-                    type: array
-                    items: { $ref: "#/components/schemas/Task" }
-                  occurrences:
-                    type: array
-                    items: { $ref: "#/components/schemas/Occurrence" }
-        "401":
-          description: Missing/invalid bearer token.
+                allOf:
+                  - $ref: "#/components/schemas/ReadResult"
+                  - type: object
+                    required: [date, items, previousDate, nextDate, today]
+                    properties:
+                      date:
+                        type: string
+                        format: date
+                        nullable: true
+                        description: The day the items are on -- `date` itself, the nearest day with items in `direction`, or null if there's none (within about three months).
+                      items:
+                        type: array
+                        items: { $ref: "#/components/schemas/Item" }
+                      previousDate:
+                        type: string
+                        format: date
+                        nullable: true
+                        description: The nearest earlier day with items, or null.
+                      nextDate:
+                        type: string
+                        format: date
+                        nullable: true
+                        description: The nearest later day with items, or null.
+                      today:
+                        type: string
+                        format: date
+                        description: Today, in the user's time zone.
+        "400": { $ref: "#/components/responses/Invalid" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/TooManyReads" }
+
+  /agenda:
+    get:
+      tags: [Lists]
+      summary: Everything on one local day, with how long each usually takes
+      description: >-
+        The side panel's timeline: every occurrence on the day (the `all`
+        view's, without the subscription reminder), each with
+        `durationMinutes` -- the average time measured on the task's earlier
+        occurrences, or 30 minutes -- and whether its due time can be
+        dragged (`PUT /tasks/{taskId}/due-time`).
+      parameters:
+        - { $ref: "#/components/parameters/XTimezone" }
+        - name: date
+          in: query
+          description: A local date; default today.
+          schema: { type: string, format: date }
+      responses:
+        "200":
+          description: The day's agenda.
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/Error" }
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ReadResult"
+                  - type: object
+                    required: [date, items]
+                    properties:
+                      date: { type: string, format: date }
+                      items:
+                        type: array
+                        items:
+                          allOf:
+                            - $ref: "#/components/schemas/Item"
+                            - type: object
+                              required: [durationMinutes, draggable]
+                              properties:
+                                durationMinutes: { type: integer }
+                                draggable: { type: boolean }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/TooManyReads" }
+
+  /focus:
     put:
-      tags: [Tasks]
-      summary: Replace the current account's entire task/occurrence state
+      tags: [Lists]
+      summary: Focus one occurrence ("Work on this now", or resuming its timer)
       description: >-
-        Bulk replace, not a per-task/per-occurrence PATCH/POST -- the client
-        already computes the full resulting `tasks`/`occurrences` locally
-        for every mutation (adding a task, completing an occurrence,
-        splitting a recurring series, rescheduling or deleting a recorded
-        occurrence, ...) before saving, so this mirrors that instead of
-        requiring a separate granular endpoint per mutation kind. `id` is
-        client-generated (see the `Task`/`Occurrence` schemas) and must be
-        unique within each array; the server doesn't invent or reconcile
-        ids. Both arrays are replaced atomically -- a save can never land
-        one without the other. A task or occurrence present in a previous
-        save but absent from this request's arrays is deleted -- there is no
-        separate delete endpoint; deletion is just omission from the next
-        full save, the same as every other part of the resulting state.
+        Only one occurrence is focused at a time. Focusing checkpoints the
+        previously focused one -- its timer pauses, or its focus time is
+        credited -- and starts this one's: its timer runs if it has one,
+        otherwise focus time is measured. Only an occurrence due today or
+        carried over, not resolved, of a task that isn't passive or locked
+        can be focused (409 `NOT_FOCUSABLE`).
+      parameters:
+        - { $ref: "#/components/parameters/XTimezone" }
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
-              required: [tasks, occurrences]
+              required: [taskId, occurrenceDate]
               properties:
+                taskId: { type: string }
+                occurrenceDate: { type: string, format: date }
+      responses:
+        "200": { $ref: "#/components/responses/Action" }
+        "400": { $ref: "#/components/responses/Invalid" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Refused" }
+    delete:
+      tags: [Lists]
+      summary: Focus nothing (also "Pause timer")
+      description: Checkpoints the focused occurrence, as above.
+      parameters:
+        - { $ref: "#/components/parameters/XTimezone" }
+      responses:
+        "200": { $ref: "#/components/responses/Action" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /manage:
+    get:
+      tags: [Lists]
+      summary: Manage Tasks' months -- which series have occurrences in which month
+      parameters:
+        - { $ref: "#/components/parameters/XTimezone" }
+      responses:
+        "200":
+          description: Months, newest first, each with its series by name.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [months]
+                properties:
+                  months:
+                    type: array
+                    items:
+                      type: object
+                      required: [month, series]
+                      properties:
+                        month: { type: string, example: "2026-10" }
+                        series:
+                          type: array
+                          items:
+                            type: object
+                            required: [seriesId, name, taskCount, mixed]
+                            properties:
+                              seriesId: { type: string }
+                              name: { type: string }
+                              taskCount:
+                                type: integer
+                                description: 1 for a single task, which can be dragged into another series (`POST /series/{seriesId}/members`).
+                              mixed: { type: boolean, description: "Its tasks have different names (they're shown as \"series: task\")." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /series/{seriesId}:
+    parameters:
+      - { $ref: "#/components/parameters/SeriesId" }
+    get:
+      tags: [Lists]
+      summary: A series and its tasks
+      parameters:
+        - { $ref: "#/components/parameters/XTimezone" }
+        - name: notes
+          in: query
+          description: "`1` adds every member's notes and activity, and their occurrences' -- the side panel's series scope."
+          schema: { type: string, enum: ["1"] }
+      responses:
+        "200":
+          description: The series.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SeriesDetail"
+                  - type: object
+                    properties:
+                      notes:
+                        type: array
+                        description: With `notes=1` -- each member's own notes and activity.
+                        items:
+                          type: object
+                          properties:
+                            taskId: { type: string }
+                            name: { type: string }
+                            dueDate: { type: string, format: date }
+                            comments: { type: array, items: { $ref: "#/components/schemas/Comment" } }
+                            log: { type: array, items: { $ref: "#/components/schemas/LogEntry" } }
+                      occurrences:
+                        type: array
+                        description: With `notes=1` -- every member occurrence with notes or activity.
+                        items:
+                          type: object
+                          properties:
+                            taskId: { type: string }
+                            occurrenceDate: { type: string, format: date }
+                            comments: { type: array, items: { $ref: "#/components/schemas/Comment" } }
+                            log: { type: array, items: { $ref: "#/components/schemas/LogEntry" } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [Lists]
+      summary: Rename a series
+      description: The series' own name -- never any task's own (see `POST /tasks/{taskId}/reset-name`).
+      parameters:
+        - { $ref: "#/components/parameters/XTimezone" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, maxLength: 500 }
+      responses:
+        "200": { $ref: "#/components/responses/Action" }
+        "400": { $ref: "#/components/responses/Invalid" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /series/{seriesId}/members:
+    parameters:
+      - { $ref: "#/components/parameters/SeriesId" }
+    post:
+      tags: [Lists]
+      summary: Move a single task's series into this one
+      description: >-
+        Only a series of one task can be moved (409 `NOT_A_SINGLE_TASK`) --
+        two series of several are never merged.
+      parameters:
+        - { $ref: "#/components/parameters/XTimezone" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [seriesId]
+              properties:
+                seriesId: { type: string, description: The single task's series. }
+      responses:
+        "200": { $ref: "#/components/responses/Action" }
+        "400": { $ref: "#/components/responses/Invalid" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Refused" }
+
+  /stats:
+    get:
+      tags: [Lists]
+      summary: Stats for a task, a series or all tasks
+      description: >-
+        Counted from the scope's last stats reset, when every task in it was
+        reset together (`since`). Completions and occurrences count from a
+        task's reset on; measured time is what's left after it.
+      parameters:
+        - { $ref: "#/components/parameters/XTimezone" }
+        - { $ref: "#/components/parameters/StatsScope" }
+      responses:
+        "200":
+          description: The stats.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Stats" }
+        "400": { $ref: "#/components/responses/Invalid" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /stats/reset:
+    post:
+      tags: [Lists]
+      summary: Start the scope's stats over now
+      description: >-
+        Clears every measured focus/timer time in scope and records the
+        moment on each task (`statsResetAt`); the tasks' history is
+        untouched.
+      parameters:
+        - { $ref: "#/components/parameters/XTimezone" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [scope]
+              properties:
+                scope: { type: string, description: "As `GET /stats`'s `scope`." }
+      responses:
+        "200": { $ref: "#/components/responses/Action" }
+        "400": { $ref: "#/components/responses/Invalid" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /stats/focus-time:
+    delete:
+      tags: [Lists]
+      summary: Delete one date's measured time across the scope (a bad measurement)
+      parameters:
+        - { $ref: "#/components/parameters/XTimezone" }
+        - { $ref: "#/components/parameters/StatsScope" }
+        - name: date
+          in: query
+          required: true
+          schema: { type: string, format: date }
+      responses:
+        "200": { $ref: "#/components/responses/Action" }
+        "400": { $ref: "#/components/responses/Invalid" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /export:
+    get:
+      tags: [Lists]
+      summary: Download my data
+      description: >-
+        The whole account as one file -- every task and occurrence (activity
+        logs left out: they're this account's own history, not data to carry
+        over), the profile and the view mode. `POST /imports` takes it back.
+      parameters:
+        - { $ref: "#/components/parameters/XTimezone" }
+      responses:
+        "200":
+          description: The export.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Export" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  # ---------------------------------------------------------------------------
+  # One task: reads, and an action endpoint per change
+  # ---------------------------------------------------------------------------
+
+  /tasks:
+    post:
+      tags: [Tasks]
+      summary: Create a task
+      description: >-
+        A free account is limited to 10 one-off and 5 recurring tasks (402
+        `TASK_LIMIT`). A `recurUntilCompleted` task starts on the first date
+        its pattern produces from `dueDate`.
+      parameters:
+        - { $ref: "#/components/parameters/XTimezone" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/TaskDetailsInput"
+                - $ref: "#/components/schemas/PatternInput"
+                - type: object
+                  properties:
+                    seriesId:
+                      type: string
+                      nullable: true
+                      description: An existing series to join (Manage Tasks' "Add new task"); otherwise the task is its own.
+      responses:
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ActionResult"
+                  - type: object
+                    required: [taskId]
+                    properties:
+                      taskId: { type: string }
+        "400": { $ref: "#/components/responses/Invalid" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "402": { $ref: "#/components/responses/PlanLimit" }
+
+  /tasks/{taskId}:
+    parameters:
+      - { $ref: "#/components/parameters/TaskId" }
+    get:
+      tags: [Tasks]
+      summary: A task with everything about it
+      description: >-
+        Its fields, notes and activity; the task editor's list of its
+        occurrences (`occurrenceList`); every recorded occurrence with its
+        own notes and activity; and its series. The side panel's
+        task/occurrence scopes read this.
+      parameters:
+        - { $ref: "#/components/parameters/XTimezone" }
+        - name: extraDate
+          in: query
+          description: Upcoming dates to list in `occurrenceList` too ("Find occurrence…" picks them before anything is recorded on them). Repeatable.
+          schema:
+            type: array
+            items: { type: string, format: date }
+          style: form
+          explode: true
+      responses:
+        "200":
+          description: The task.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TaskDetail" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [Tasks]
+      summary: Edit the task's details (the editor's Details tab)
+      description: >-
+        Name, description, details, time, time zone and flags -- for every
+        occurrence, past and future. Send every field (the tab's whole
+        state); nothing changes (and nothing is logged) when none differs.
+      parameters:
+        - { $ref: "#/components/parameters/XTimezone" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TaskDetailsInput" }
+      responses:
+        "200": { $ref: "#/components/responses/Action" }
+        "400": { $ref: "#/components/responses/Invalid" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [Tasks]
+      summary: Delete the task and all its occurrences
+      parameters:
+        - { $ref: "#/components/parameters/XTimezone" }
+      responses:
+        "200": { $ref: "#/components/responses/Action" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /tasks/{taskId}/dates:
+    parameters:
+      - { $ref: "#/components/parameters/TaskId" }
+    get:
+      tags: [Tasks]
+      summary: The dates a task occurs on in a range
+      description: >-
+        For calendars that only offer the task's own dates ("Find
+        occurrence…"), and the last date it can ever occur on (pausing can't
+        resume past it).
+      parameters:
+        - { $ref: "#/components/parameters/XTimezone" }
+        - { name: from, in: query, required: true, schema: { type: string, format: date } }
+        - name: to
+          in: query
+          required: true
+          description: At most about a year after `from`.
+          schema: { type: string, format: date }
+      responses:
+        "200":
+          description: The dates.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [dates, last]
+                properties:
+                  dates:
+                    type: array
+                    items: { type: string, format: date }
+                  last:
+                    type: string
+                    format: date
+                    nullable: true
+                    description: The last date the task can occur on; null = no end.
+        "400": { $ref: "#/components/responses/Invalid" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /tasks/{taskId}/pattern:
+    parameters:
+      - { $ref: "#/components/parameters/TaskId" }
+    put:
+      tags: [Tasks]
+      summary: Change the recurrence pattern (the editor's Recurrence tab), from today on
+      description: >-
+        Everything before today stays as it was: a plain task's dates the
+        old pattern produced before today are saved as occurrences, and the
+        new pattern starts today. A one-off just moves (with what's recorded
+        on it). A task staying `recurUntilCompleted` keeps its live
+        occurrence (unless that's still the blank next cycle, which is
+        recomputed). Ends a plain task's pause. Turning a one-off into a
+        recurring task or back counts against the free plan's limits like
+        creating one (402 `TASK_LIMIT`). Nothing changes when the pattern is
+        the same.
+      parameters:
+        - { $ref: "#/components/parameters/XTimezone" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PatternInput" }
+      responses:
+        "200": { $ref: "#/components/responses/Action" }
+        "400": { $ref: "#/components/responses/Invalid" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "402": { $ref: "#/components/responses/PlanLimit" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /tasks/{taskId}/due-time:
+    parameters:
+      - { $ref: "#/components/parameters/TaskId" }
+    put:
+      tags: [Tasks]
+      summary: Move the due time (the agenda's drag)
+      description: >-
+        `dueTime` is the user's local time on `date`; a task fixed to
+        another time zone is given the matching time in its own zone. No
+        effect on an all-day task.
+      parameters:
+        - { $ref: "#/components/parameters/XTimezone" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [dueTime]
+              properties:
+                dueTime: { type: string, example: "14:30" }
+                date: { type: string, format: date, description: The agenda's day; default today. }
+      responses:
+        "200": { $ref: "#/components/responses/Action" }
+        "400": { $ref: "#/components/responses/Invalid" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /tasks/{taskId}/pause:
+    parameters:
+      - { $ref: "#/components/parameters/TaskId" }
+    post:
+      tags: [Tasks]
+      summary: Pause recurrence from an occurrence until a date
+      description: >-
+        Every occurrence from `from` (inclusive) up to `until` is hidden;
+        the task occurs on `until` (even if its pattern doesn't land there)
+        and continues per its pattern. A plain task's pattern restarts on
+        `until` (dates before `from` saved as occurrences, blank ones in
+        between dropped); a `recurUntilCompleted` task's live occurrence
+        moves there. Pausing again from the resume date extends the pause.
+        Refused for a task that can't pause there (409 `NOT_PAUSABLE`), or
+        past its last possible date (409 `NOTHING_AFTER`).
+      parameters:
+        - { $ref: "#/components/parameters/XTimezone" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [from, until]
+              properties:
+                from: { type: string, format: date, description: The right-clicked occurrence. }
+                until: { type: string, format: date, description: The resume date, after `from`. }
+      responses:
+        "200": { $ref: "#/components/responses/Action" }
+        "400": { $ref: "#/components/responses/Invalid" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Refused" }
+
+  /tasks/{taskId}/resume:
+    parameters:
+      - { $ref: "#/components/parameters/TaskId" }
+    post:
+      tags: [Tasks]
+      summary: Resume a paused task today
+      description: >-
+        Ends a pause in effect today: a plain task's pattern restarts today
+        (with an occurrence today even if the pattern doesn't land there),
+        a `recurUntilCompleted` task's live occurrence moves to today. 409
+        `NOT_PAUSED` when no pause is in effect, `DATE_TAKEN` when the
+        live occurrence can't move onto today.
+      parameters:
+        - { $ref: "#/components/parameters/XTimezone" }
+      responses:
+        "200": { $ref: "#/components/responses/Action" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Refused" }
+
+  /tasks/{taskId}/reset-name:
+    parameters:
+      - { $ref: "#/components/parameters/TaskId" }
+    post:
+      tags: [Tasks]
+      summary: Give the task its series' name
+      parameters:
+        - { $ref: "#/components/parameters/XTimezone" }
+      responses:
+        "200": { $ref: "#/components/responses/Action" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /tasks/{taskId}/leave-series:
+    parameters:
+      - { $ref: "#/components/parameters/TaskId" }
+    post:
+      tags: [Tasks]
+      summary: Take the task out of its series, into one of its own
+      parameters:
+        - { $ref: "#/components/parameters/XTimezone" }
+      responses:
+        "200": { $ref: "#/components/responses/Action" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /tasks/{taskId}/notes:
+    parameters:
+      - { $ref: "#/components/parameters/TaskId" }
+    post:
+      tags: [Tasks]
+      summary: Add a note to the task as a whole
+      description: >-
+        A free account has 5 notes per task, task- and occurrence-level
+        together (402 `NOTE_LIMIT`); a task beyond a lapsed account's limits
+        takes none (402 `TASK_LOCKED`).
+      parameters:
+        - { $ref: "#/components/parameters/XTimezone" }
+      requestBody: { $ref: "#/components/requestBodies/NoteText" }
+      responses:
+        "200": { $ref: "#/components/responses/Action" }
+        "400": { $ref: "#/components/responses/Invalid" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "402": { $ref: "#/components/responses/PlanLimit" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /tasks/{taskId}/notes/{timestamp}:
+    parameters:
+      - { $ref: "#/components/parameters/TaskId" }
+      - { $ref: "#/components/parameters/NoteTimestamp" }
+    patch:
+      tags: [Tasks]
+      summary: Edit a task-level note
+      parameters:
+        - { $ref: "#/components/parameters/XTimezone" }
+      requestBody: { $ref: "#/components/requestBodies/NoteText" }
+      responses:
+        "200": { $ref: "#/components/responses/Action" }
+        "400": { $ref: "#/components/responses/Invalid" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [Tasks]
+      summary: Delete a task-level note
+      parameters:
+        - { $ref: "#/components/parameters/XTimezone" }
+      responses:
+        "200": { $ref: "#/components/responses/Action" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /tasks/{taskId}/occurrences:
+    parameters:
+      - { $ref: "#/components/parameters/TaskId" }
+    post:
+      tags: [Tasks]
+      summary: Add an extra occurrence on any date
+      description: A `manual` occurrence on a date the task doesn't already occur on (409 `OCCURRENCE_EXISTS`).
+      parameters:
+        - { $ref: "#/components/parameters/XTimezone" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [date]
+              properties:
+                date: { type: string, format: date }
+      responses:
+        "200": { $ref: "#/components/responses/Action" }
+        "400": { $ref: "#/components/responses/Invalid" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Refused" }
+
+  /tasks/{taskId}/occurrences/{date}:
+    parameters:
+      - { $ref: "#/components/parameters/TaskId" }
+      - { $ref: "#/components/parameters/OccurrenceDate" }
+    delete:
+      tags: [Tasks]
+      summary: Delete one occurrence
+      description: >-
+        Only an occurrence `occurrenceList` marks `deletable` (409 `NOT_DELETABLE`).
+        A date the pattern still produces is skipped from then on.
+      parameters:
+        - { $ref: "#/components/parameters/XTimezone" }
+      responses:
+        "200": { $ref: "#/components/responses/Action" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Refused" }
+
+  /tasks/{taskId}/occurrences/{date}/reschedule:
+    parameters:
+      - { $ref: "#/components/parameters/TaskId" }
+      - { $ref: "#/components/parameters/OccurrenceDate" }
+    post:
+      tags: [Tasks]
+      summary: Move a recorded occurrence to another date
+      description: >-
+        Moving it forward skips every date the pattern produces in between.
+        Refused for an occurrence `occurrenceList` doesn't mark
+        `reschedulable` (409 `NOT_RESCHEDULABLE` -- e.g. a
+        `recurUntilCompleted` task's live one), and onto a date that
+        already has one (409 `DATE_TAKEN`).
+      parameters:
+        - { $ref: "#/components/parameters/XTimezone" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [date]
+              properties:
+                date: { type: string, format: date }
+      responses:
+        "200": { $ref: "#/components/responses/Action" }
+        "400": { $ref: "#/components/responses/Invalid" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Refused" }
+
+  /tasks/{taskId}/occurrences/{date}/details:
+    parameters:
+      - { $ref: "#/components/parameters/TaskId" }
+      - { $ref: "#/components/parameters/OccurrenceDate" }
+    put:
+      tags: [Tasks]
+      summary: Set one occurrence's own details (on top of the task's)
+      parameters:
+        - { $ref: "#/components/parameters/XTimezone" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                details: { type: string, nullable: true, description: null or empty clears them. }
+      responses:
+        "200": { $ref: "#/components/responses/Action" }
+        "400": { $ref: "#/components/responses/Invalid" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /tasks/{taskId}/occurrences/{date}/notes:
+    parameters:
+      - { $ref: "#/components/parameters/TaskId" }
+      - { $ref: "#/components/parameters/OccurrenceDate" }
+    post:
+      tags: [Tasks]
+      summary: Add a note to one occurrence
+      description: Same limits as `POST /tasks/{taskId}/notes`.
+      parameters:
+        - { $ref: "#/components/parameters/XTimezone" }
+      requestBody: { $ref: "#/components/requestBodies/NoteText" }
+      responses:
+        "200": { $ref: "#/components/responses/Action" }
+        "400": { $ref: "#/components/responses/Invalid" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "402": { $ref: "#/components/responses/PlanLimit" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /tasks/{taskId}/occurrences/{date}/notes/{timestamp}:
+    parameters:
+      - { $ref: "#/components/parameters/TaskId" }
+      - { $ref: "#/components/parameters/OccurrenceDate" }
+      - { $ref: "#/components/parameters/NoteTimestamp" }
+    patch:
+      tags: [Tasks]
+      summary: Edit an occurrence's note
+      parameters:
+        - { $ref: "#/components/parameters/XTimezone" }
+      requestBody: { $ref: "#/components/requestBodies/NoteText" }
+      responses:
+        "200": { $ref: "#/components/responses/Action" }
+        "400": { $ref: "#/components/responses/Invalid" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [Tasks]
+      summary: Delete an occurrence's note
+      parameters:
+        - { $ref: "#/components/parameters/XTimezone" }
+      responses:
+        "200": { $ref: "#/components/responses/Action" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /tasks/{taskId}/occurrences/{date}/timer:
+    parameters:
+      - { $ref: "#/components/parameters/TaskId" }
+      - { $ref: "#/components/parameters/OccurrenceDate" }
+    post:
+      tags: [Tasks]
+      summary: Set a timer on an occurrence (and start it)
+      description: >-
+        A countdown of `minutes` (at most 360), or with `countUp` a
+        stopwatch. `continuePastZero` keeps a countdown running as overtime.
+        Either way a timer stops by itself after 360 minutes. With `start`
+        (default) the occurrence is focused and the timer runs; without, it
+        waits, paused, for the occurrence's next focus. Only an occurrence
+        that could be focused (409 `NOT_FOCUSABLE`).
+      parameters:
+        - { $ref: "#/components/parameters/XTimezone" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                countUp: { type: boolean, default: false }
+                minutes: { type: integer, minimum: 1, maximum: 360, description: Required unless countUp. }
+                continuePastZero: { type: boolean, default: false }
+                start: { type: boolean, default: true }
+      responses:
+        "200": { $ref: "#/components/responses/Action" }
+        "400": { $ref: "#/components/responses/Invalid" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Refused" }
+    delete:
+      tags: [Tasks]
+      summary: Cancel an occurrence's timer
+      description: The time it ran is credited. A focused occurrence stays focused, without a timer.
+      parameters:
+        - { $ref: "#/components/parameters/XTimezone" }
+      responses:
+        "200": { $ref: "#/components/responses/Action" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /tasks/{taskId}/occurrences/{date}/{action}:
+    parameters:
+      - { $ref: "#/components/parameters/TaskId" }
+      - { $ref: "#/components/parameters/OccurrenceDate" }
+      - name: action
+        in: path
+        required: true
+        schema: { type: string, enum: [complete, reopen, fail, unfail, dismiss, restore] }
+    post:
+      tags: [Tasks]
+      summary: Resolve an occurrence, take that back, or hide/show it
+      description: >-
+        `complete`/`reopen` (a passive task: `fail`/`unfail` -- its checkbox
+        marks it failed); `dismiss`/`restore` hide a carried-over occurrence
+        from the list or show it again. Completing also dismisses the task's
+        earlier missed occurrences and stops a timer on this one. A
+        `recurUntilCompleted` task: completing records it done on this date
+        and starts the next cycle; reopening takes that cycle back -- refused
+        once a later cycle has been resolved (409 `REOPEN_BLOCKED`). Not for
+        a future occurrence (409 `NOT_DUE`), nor a task beyond a lapsed
+        account's limits (402 `TASK_LOCKED`). Which of these an item allows
+        is in its `actions`.
+      parameters:
+        - { $ref: "#/components/parameters/XTimezone" }
+      responses:
+        "200": { $ref: "#/components/responses/Action" }
+        "400": { $ref: "#/components/responses/Invalid" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "402": { $ref: "#/components/responses/PlanLimit" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Refused" }
+
+  # ---------------------------------------------------------------------------
+  # Imports: uploaded in chunks, committed in one go
+  # ---------------------------------------------------------------------------
+
+  /imports:
+    post:
+      tags: [Imports]
+      summary: Start an import
+      description: >-
+        Settings' "Import data": a file from `GET /export` (or an older
+        export) is uploaded in chunks -- whole tasks with their occurrences
+        -- then committed, replacing every task of the account in one
+        transaction. Nothing changes until the commit, so a failed or
+        abandoned upload leaves the account as it was; an import not
+        committed within an hour expires. Starting one drops any earlier
+        unfinished import of the account.
+      responses:
+        "201":
+          description: Started.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [importId, maxChunks]
+                properties:
+                  importId: { type: string, format: uuid }
+                  maxChunks: { type: integer, example: 500 }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /imports/{importId}/chunks:
+    parameters:
+      - { $ref: "#/components/parameters/ImportId" }
+    post:
+      tags: [Imports]
+      summary: Upload one chunk
+      description: >-
+        At most 1 MB, one at a time, at least 200 ms after the previous one
+        (429 `TOO_FAST` with `Retry-After` -- wait and send it again).
+        Re-sending a `seq` replaces it. Each task and occurrence is checked
+        just enough that the rules can't choke on it; old formats are
+        brought up to date at the commit.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [seq, tasks, occurrences]
+              properties:
+                seq: { type: integer, minimum: 0, description: "0 .. maxChunks - 1, in order." }
                 tasks:
                   type: array
                   items: { $ref: "#/components/schemas/Task" }
@@ -755,34 +1667,63 @@ paths:
                   type: array
                   items: { $ref: "#/components/schemas/Occurrence" }
       responses:
+        "204":
+          description: Staged.
+        "400": { $ref: "#/components/responses/Invalid" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "413":
+          description: The chunk is over 1 MB.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "429":
+          description: "`TOO_FAST` -- sent too soon after the previous chunk."
+          headers:
+            Retry-After: { schema: { type: integer } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /imports/{importId}/commit:
+    parameters:
+      - { $ref: "#/components/parameters/ImportId" }
+    post:
+      tags: [Imports]
+      summary: Replace the account's tasks with the uploaded ones
+      description: >-
+        In one transaction: the chunks are assembled, older formats brought
+        up to date (several records per task merged into one, ...), a free
+        account's import trimmed to what it could have created itself (the
+        first 10 one-off and 5 recurring tasks by creation, 5 notes per
+        task -- `limited`), every task replaced. Each task's activity starts
+        over with its import; nothing is focused afterwards.
+      parameters:
+        - { $ref: "#/components/parameters/XTimezone" }
+      responses:
         "200":
-          description: Saved -- echoes back exactly what was stored.
+          description: Imported.
           content:
             application/json:
               schema:
                 type: object
-                required: [tasks, occurrences]
+                required: [taskCount, limited]
                 properties:
-                  tasks:
-                    type: array
-                    items: { $ref: "#/components/schemas/Task" }
-                  occurrences:
-                    type: array
-                    items: { $ref: "#/components/schemas/Occurrence" }
-        "401":
-          description: Missing/invalid bearer token.
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/Error" }
-        "409":
-          description: >-
-            A same-(taskId, occurrenceDate) collision within the submitted
-            `occurrences` array, or against a row the client's own
-            pre-check missed (e.g. a race with another device) --
-            `code: 'CONFLICT'`.
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/Error" }
+                  taskCount: { type: integer }
+                  limited: { type: boolean, description: The free plan's limits left some tasks or notes out. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /imports/{importId}:
+    parameters:
+      - { $ref: "#/components/parameters/ImportId" }
+    delete:
+      tags: [Imports]
+      summary: Abandon an import
+      responses:
+        "204":
+          description: Abandoned (or there was nothing to abandon).
+        "401": { $ref: "#/components/responses/Unauthorized" }
 
   /subscriptions/trial:
     post:
@@ -1144,6 +2085,104 @@ components:
         or any of the subscription-mutating endpoints. See the `Token`
         schema for what it's expected to carry.
 
+  parameters:
+    XTimezone:
+      name: X-Timezone
+      in: header
+      description: >-
+        The user's IANA time zone (the browser's). "Today", which day an
+        occurrence shows on, overdue and due times are all worked out in it.
+        Missing or unknown: Europe/Zagreb.
+      schema: { type: string, example: Europe/Zagreb }
+    TaskId:
+      name: taskId
+      in: path
+      required: true
+      schema: { type: string }
+    SeriesId:
+      name: seriesId
+      in: path
+      required: true
+      schema: { type: string }
+    OccurrenceDate:
+      name: date
+      in: path
+      required: true
+      description: The occurrence's date (`Item.occurrenceDate` -- in the task's own zone, which can differ from the day it shows on).
+      schema: { type: string, format: date }
+    NoteTimestamp:
+      name: timestamp
+      in: path
+      required: true
+      description: A note's `timestamp` -- notes have no ids of their own.
+      schema: { type: integer, format: int64 }
+    ImportId:
+      name: importId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    StatsScope:
+      name: scope
+      in: query
+      required: true
+      description: "`task:<taskId>`, `series:<seriesId>` or `all` (every task)."
+      schema: { type: string, example: "series:abc123" }
+
+  requestBodies:
+    NoteText:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [text]
+            properties:
+              text: { type: string }
+
+  responses:
+    Action:
+      description: Done -- what changed, for the client to fetch again.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ActionResult" }
+    Invalid:
+      description: "`VALIDATION_ERROR` -- a missing or malformed field, named in `message`."
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Unauthorized:
+      description: Missing/invalid bearer token.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NotFound:
+      description: "`TASK_NOT_FOUND`, `SERIES_NOT_FOUND`, `NOTE_NOT_FOUND`, or no such import."
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Refused:
+      description: The task's rules don't allow it now -- see the endpoint's own description for the codes.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    PlanLimit:
+      description: >-
+        The free plan's limits: `TASK_LIMIT` (no more tasks of this kind),
+        `NOTE_LIMIT` (no more notes on this task), `TASK_LOCKED` (a task
+        beyond a lapsed account's limits can't be completed or noted on).
+        The client offers a subscription.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    TooManyReads:
+      description: >-
+        Reads (`GET` under `/atodo/v1/`) have their own rate limit, 100 per
+        10 seconds by default, separate from the general one -- hitting it
+        only answers 429 (plain text), it never counts toward an IP ban.
+        `RateLimit-Reset` says when to try again.
+      headers:
+        RateLimit-Reset: { schema: { type: integer }, description: Seconds until the window resets. }
+
   schemas:
     EpochMillis:
       type: integer
@@ -1255,15 +2294,6 @@ components:
           maximum: 6
           nullable: true
           description: First day of the week for calendars and weekday lists, 0=Sunday..6=Saturday. null means never chosen -- the client then follows the language (Monday for hr, Sunday for en).
-        activeTaskId:
-          type: string
-          nullable: true
-          description: Which task (by Task.id) is currently focused/being timed, if any.
-        activeOccurrenceDate:
-          type: string
-          format: date
-          nullable: true
-          description: Which occurrence of activeTaskId, for a recurring task that can show more than one row at once. Always null when activeTaskId is null.
         todoViewMode:
           type: string
           enum: [pending, next-recurrence, all]
@@ -1414,9 +2444,9 @@ components:
       type: object
       nullable: true
       description: >-
-        Deprecated -- no longer written by the client, and cleared on load:
-        a task's data now applies to all of its occurrences alike. Kept in
-        the schema only so older saved data still round-trips. Was:
+        Deprecated -- cleared when older data is imported: a task's data
+        applies to all of its occurrences alike. Kept in the schema only so
+        older exports still import. Was:
         per-occurrence field overrides for a "this occurrence only" edit --
         any field left out falls back to the owning Task's own value.
       properties:
@@ -1433,11 +2463,15 @@ components:
 
     Occurrence:
       type: object
+      description: >-
+        One recorded occurrence of a task, as stored and exported (and
+        imported). The client doesn't read these directly -- it gets
+        `Item`s, `TaskDetail` and the like.
       required: [id, taskId, occurrenceDate, status]
       properties:
         id:
           type: string
-          description: This occurrence's own id, client-generated (see uid()).
+          description: This occurrence's own id, server-generated.
         taskId:
           type: string
           description: >-
@@ -1449,12 +2483,9 @@ components:
             The date this occurrence is/was recorded against. For a
             recurUntilCompleted task, the date it *first* became due (see
             pendingReschedules for how its due date moves while still
-            pending). Can change -- the client offers directly rescheduling
-            an already-recorded occurrence to a different date -- subject to
-            the (taskId, occurrenceDate) uniqueness PUT /tasks documents
-            below; the client is expected to pre-check for a collision
-            itself before saving, same as it already computes every other
-            part of the resulting state locally first.
+            pending). Can change (`POST
+            /tasks/{taskId}/occurrences/{date}/reschedule`); unique per
+            task.
         pendingReschedules:
           type: array
           items: { type: string, format: date }
@@ -1514,6 +2545,7 @@ components:
 
     Task:
       type: object
+      description: A task as stored and exported (and imported) -- see `Occurrence`.
       required:
         - id
         - taskId
@@ -1541,8 +2573,8 @@ components:
             count as occurrences whatever the current pattern says. When the
             pattern changes, every date the old one produced before today is
             saved as an Occurrence first. Older data could hold several
-            records per taskId ("fragments" of a split recurring task); the
-            client merges those into one on load.
+            records per taskId ("fragments" of a split recurring task); an
+            import merges those into one.
         seriesId:
           type: string
           description: Groups otherwise-unrelated tasks a person has manually merged into one series in the Manage Tasks modal -- independent of taskId.
@@ -1576,6 +2608,10 @@ components:
           format: date
           nullable: true
         frequency: { $ref: "#/components/schemas/Frequency" }
+        timeZone:
+          type: string
+          nullable: true
+          description: A timed task's fixed zone (see `TaskDetailsInput.timeZone`), or null.
         createdAt:
           allOf: [{ $ref: "#/components/schemas/EpochMillis" }]
           description: When the task was first created (see the free-tier task limits, which grandfather by this field).
@@ -1585,7 +2621,7 @@ components:
           description: >-
             When the task's stats were last reset (null = never). Stats count
             the task's occurrences from then on; the task's own history is
-            untouched. Stored and returned as sent.
+            untouched. Set by `POST /stats/reset`.
         log:
           type: array
           items: { $ref: "#/components/schemas/LogEntry" }
@@ -1594,3 +2630,271 @@ components:
           type: array
           items: { $ref: "#/components/schemas/Comment" }
           description: General notes about the task as a whole (added while the side panel is scoped to 'task'/'series', not to one date) -- see Occurrence.comments for per-occurrence notes.
+
+    ReadResult:
+      type: object
+      properties:
+        expiredTimers:
+          type: array
+          description: >-
+            Present when a timer ran out since the account was last read --
+            every request first brings the account up to date (expired
+            timers stopped and credited, missed occurrences carried over or
+            dismissed). The client plays its chime.
+          items:
+            type: object
+            properties:
+              taskId: { type: string }
+              occurrenceDate: { type: string, format: date }
+
+    ActionResult:
+      allOf:
+        - $ref: "#/components/schemas/ReadResult"
+        - type: object
+          required: [changed, active]
+          properties:
+            changed:
+              type: object
+              description: What the action changed -- the client fetches those days, the side panel and the agenda again.
+              properties:
+                taskIds:
+                  type: array
+                  items: { type: string }
+                all: { type: boolean, description: Everything may have changed (an import, say). }
+            active:
+              type: object
+              nullable: true
+              description: The focused occurrence after the action, or null.
+              properties:
+                taskId: { type: string }
+                occurrenceDate: { type: string, format: date }
+
+    Item:
+      type: object
+      description: >-
+        One occurrence as a list shows it -- everything a row draws, and
+        which actions it allows (the client draws exactly these).
+      required: [taskId, occurrenceDate, displayDate, kind, label, actions]
+      properties:
+        taskId: { type: string, nullable: true, description: null for the subscription reminder. }
+        seriesId: { type: string, nullable: true }
+        occurrenceDate:
+          type: string
+          format: date
+          description: The occurrence's own date, in the task's zone -- what actions address it by.
+        displayDate:
+          type: string
+          format: date
+          description: The user's local day it shows on (differs from occurrenceDate only for a task fixed to another zone).
+        kind:
+          type: string
+          enum: [carried-over, today, tomorrow, upcoming]
+        name: { type: string }
+        label: { type: string, description: 'The name to show: "series: name" in a mixed series.' }
+        description: { type: string }
+        allDay: { type: boolean }
+        dueTime:
+          type: string
+          nullable: true
+          description: "HH:MM in the user's local time; null when allDay."
+        timeZone:
+          type: string
+          nullable: true
+          description: A timed task's fixed zone, or null (its time is local wherever the user is).
+        zoneDueTime:
+          type: string
+          nullable: true
+          description: The due time in the task's own zone, when that differs from the user's.
+        appointment: { type: boolean }
+        passive: { type: boolean }
+        recurUntilCompleted: { type: boolean }
+        completed: { type: boolean }
+        failed: { type: boolean }
+        overdue: { type: boolean }
+        dismissed: { type: boolean }
+        active: { type: boolean, description: This occurrence is the focused one. }
+        locked: { type: boolean, description: "Beyond a free/lapsed account's limits: a padlock instead of a checkbox." }
+        virtual:
+          type: string
+          nullable: true
+          enum: [subscription-prompt, null]
+          description: >-
+            `subscription-prompt`: the reminder a free account gets on
+            today's list -- no task behind it, no actions; the client words
+            it in the user's language.
+        timer: { $ref: "#/components/schemas/Timer" }
+        actions:
+          type: array
+          items:
+            type: string
+            enum: [timer, pauseTimer, resumeTimer, cancelTimer, complete, reopen, fail, unfail, focus, unfocus, dismiss, restore, edit, pause, resume, stats]
+
+    TaskDetailsInput:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, maxLength: 500 }
+        description: { type: string, maxLength: 2000 }
+        details: { type: string }
+        allDay: { type: boolean }
+        dueTime: { type: string, nullable: true, description: "HH:MM; required unless allDay." }
+        timeZone:
+          type: string
+          nullable: true
+          description: >-
+            An IANA zone the due time is fixed in (the task then occurs on
+            its zone's dates and is due at that moment, shown on the user's
+            local day), or null for a "fluid" task, due at that local time
+            wherever the user is. Always null for an all-day task.
+        appointment: { type: boolean }
+        passive: { type: boolean }
+
+    PatternInput:
+      type: object
+      required: [dueDate, frequency]
+      properties:
+        dueDate: { type: string, format: date }
+        frequency:
+          allOf: [{ $ref: "#/components/schemas/Frequency" }]
+          description: "`startsOn`, `skipDates` and `pause` are the server's own -- ignored if sent."
+        endDate: { type: string, format: date, nullable: true, description: Ignored for a one-off. }
+        recurUntilCompleted: { type: boolean }
+
+    TaskSummary:
+      type: object
+      properties:
+        taskId: { type: string }
+        seriesId: { type: string }
+        name: { type: string }
+        label: { type: string }
+        description: { type: string }
+        details: { type: string }
+        dueDate: { type: string, format: date }
+        dueTime: { type: string, nullable: true }
+        allDay: { type: boolean }
+        appointment: { type: boolean }
+        passive: { type: boolean }
+        recurUntilCompleted: { type: boolean }
+        endDate: { type: string, format: date, nullable: true }
+        frequency: { $ref: "#/components/schemas/Frequency" }
+        timeZone: { type: string, nullable: true }
+        createdAt: { $ref: "#/components/schemas/EpochMillis" }
+        statsResetAt:
+          allOf: [{ $ref: "#/components/schemas/EpochMillis" }]
+          nullable: true
+        locked: { type: boolean }
+        paused:
+          type: object
+          nullable: true
+          description: The pause in effect today, if any.
+          properties:
+            from: { type: string, format: date }
+            until: { type: string, format: date }
+
+    TaskDetail:
+      type: object
+      required: [task, occurrenceList, occurrences, series]
+      properties:
+        task:
+          allOf:
+            - $ref: "#/components/schemas/TaskSummary"
+            - type: object
+              properties:
+                comments: { type: array, items: { $ref: "#/components/schemas/Comment" } }
+                log: { type: array, items: { $ref: "#/components/schemas/LogEntry" } }
+                notesUsed: { type: integer, description: Notes on the task and its occurrences together. }
+                canAddNote: { type: boolean }
+        occurrenceList:
+          type: array
+          description: >-
+            The editor's Occurrences tab, newest first: every past
+            occurrence, the next one (and the one after, if the next is
+            already done), every recorded one, and any `extraDate`.
+          items:
+            type: object
+            properties:
+              date: { type: string, format: date }
+              next: { type: boolean }
+              status: { type: string, enum: [pending, missed, upcoming, completed, failed] }
+              recorded: { type: boolean, description: Something is recorded on it (it has a row). }
+              noteCount: { type: integer }
+              deletable: { type: boolean }
+              reschedulable: { type: boolean }
+        occurrences:
+          type: array
+          description: Every recorded occurrence, with its own notes and activity.
+          items:
+            type: object
+            properties:
+              occurrenceDate: { type: string, format: date }
+              status: { type: string, enum: [pending, completed, failed] }
+              dismissed: { type: boolean }
+              manual: { type: boolean }
+              details: { type: string, nullable: true }
+              comments: { type: array, items: { $ref: "#/components/schemas/Comment" } }
+              log: { type: array, items: { $ref: "#/components/schemas/LogEntry" } }
+              focusedSeconds: { type: integer }
+              timerSeconds: { type: integer }
+        series:
+          type: object
+          properties:
+            seriesId: { type: string }
+            name: { type: string }
+            mixed: { type: boolean }
+
+    SeriesDetail:
+      type: object
+      required: [seriesId, name, mixed, tasks]
+      properties:
+        seriesId: { type: string }
+        name: { type: string }
+        mixed: { type: boolean }
+        tasks:
+          type: array
+          description: By due date.
+          items: { $ref: "#/components/schemas/TaskSummary" }
+
+    Stats:
+      type: object
+      properties:
+        scope: { type: string, enum: [task, series, all] }
+        title: { type: string, nullable: true, description: The task's or series' name. }
+        since:
+          allOf: [{ $ref: "#/components/schemas/EpochMillis" }]
+          nullable: true
+          description: When every task in scope was reset together, if they were.
+        aggregate: { type: boolean, description: A series or all tasks (an overview and time per day). }
+        recurring: { type: boolean, description: Completion counts apply. }
+        taskCount: { type: integer }
+        occurrencesToDate: { type: integer }
+        completed: { type: integer }
+        completionRate: { type: integer, description: Percent. }
+        totalFocusedSeconds: { type: integer }
+        totalTimerSeconds: { type: integer }
+        perDate:
+          type: array
+          description: Newest first.
+          items:
+            type: object
+            properties:
+              date: { type: string, format: date }
+              focusedSeconds: { type: integer }
+              timerSeconds: { type: integer }
+
+    Export:
+      type: object
+      properties:
+        version: { type: integer, example: 1 }
+        exportedAt: { type: string, format: date-time }
+        tasks:
+          type: array
+          items: { $ref: "#/components/schemas/Task" }
+        occurrences:
+          type: array
+          items: { $ref: "#/components/schemas/Occurrence" }
+        userProfile:
+          type: object
+          description: nickname, avatar, timeFormat, background, language, theme, weekStart.
+        activeTaskId: { type: string, nullable: true }
+        activeOccurrenceDate: { type: string, format: date, nullable: true }
+        todoViewMode: { type: string, enum: [pending, next-recurrence, all] }

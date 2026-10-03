@@ -22,6 +22,8 @@ const router = express.Router();
 
 // camelCase request field -> snake_case column. background is JSONB and
 // needs explicit JSON encoding, same reason routes/blog.js encodes body_hr/body_en.
+// (The focused occurrence is set through PUT/DELETE /focus instead, which
+// keeps its timer and focus time.)
 const FIELD_COLUMNS = {
  nickname: 'nickname',
  avatar: 'avatar',
@@ -30,8 +32,6 @@ const FIELD_COLUMNS = {
  language: 'language',
  theme: 'theme',
  weekStart: 'week_start',
- activeTaskId: 'active_task_id',
- activeOccurrenceDate: 'active_occurrence_date',
  todoViewMode: 'todo_view_mode',
 };
 
