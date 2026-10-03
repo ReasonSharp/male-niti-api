@@ -184,4 +184,22 @@ const throwsCode = (fn, code, message) => assert.throws(fn, (err) => err.code ==
  assert.strictEqual(fluid.dueTime, '16:00', 'a fluid task takes it as is');
 }
 
+// --- Changing a task's kind counts against the free plan's limits --------------------
+
+{
+ const daily = (id) => task({ id, dueDate: '2026-10-01' });
+ const once = (id) => task({ id, dueDate: '2026-10-05', frequency: { type: 'once', interval: 1 } });
+ const toDaily = { dueDate: '2026-10-05', frequency: { type: 'days', interval: 1 }, endDate: null, recurUntilCompleted: false };
+ const state = makeState({ tasks: ['a', 'b', 'c', 'd', 'e'].map(daily).concat([once('x')]), subscriptionActive: false });
+ throwsCode(() => state.applyPatternChange('x', toDaily), 'TASK_LIMIT', 'a sixth recurring task by editing a one-off is refused');
+ assert.strictEqual(state.taskByTaskId('x').frequency.type, 'once', '...and the task is left as it was');
+ state.applyPatternChange('x', { ...toDaily, dueDate: '2026-10-06', frequency: { type: 'once', interval: 1 } });
+ assert.strictEqual(state.taskByTaskId('x').dueDate, '2026-10-06', 'a one-off can still be moved');
+ const tenOnce = makeState({ tasks: Array.from({ length: 10 }, (_, i) => once(`o${i}`)).concat([daily('r')]), subscriptionActive: false });
+ throwsCode(() => tenOnce.applyPatternChange('r', { ...toDaily, frequency: { type: 'once', interval: 1 } }), 'TASK_LIMIT', 'an eleventh one-off by editing a recurring task is refused');
+ const subscribed = makeState({ tasks: ['a', 'b', 'c', 'd', 'e'].map(daily).concat([once('x')]), subscriptionActive: true });
+ subscribed.applyPatternChange('x', toDaily);
+ assert.strictEqual(subscribed.taskByTaskId('x').frequency.type, 'days', 'a subscriber has no limit');
+}
+
 console.log('account.test.js: all assertions passed');
