@@ -4,6 +4,7 @@ const authRouter = require('./auth');
 const usersRouter = require('./users');
 const tasksRouter = require('./tasks');
 const subscriptionsRouter = require('./subscriptions');
+const supportRouter = require('./support');
 
 const router = express.Router();
 
@@ -14,5 +15,7 @@ router.use('/auth', authRouter);
 router.use('/users', requireAtodoAuth, usersRouter);
 router.use('/tasks', requireAtodoAuth, tasksRouter);
 router.use('/subscriptions', requireAtodoAuth, subscriptionsRouter);
+// Public: logged out too (the account is attached when a token is sent).
+router.use('/support', supportRouter);
 
 module.exports = router;

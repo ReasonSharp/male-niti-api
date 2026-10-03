@@ -29,9 +29,11 @@ router.post('/', rateLimiter.strict, asyncHandler(async (req, res) => {
 
 router.get('/', requireSuperAdmin, asyncHandler(async (req, res) => {
  const { rows } = await db.query(
-  `SELECT id, name, email, kind, msg, completed, received_at
-   FROM contact_submissions
-   ORDER BY received_at DESC`
+  `SELECT c.id, c.name, c.email, c.kind, c.msg, c.completed, c.received_at,
+          c.source, c.atodo_account_id, a.email AS atodo_account_email, c.context
+   FROM contact_submissions c
+   LEFT JOIN atodo.accounts a ON a.id = c.atodo_account_id
+   ORDER BY c.received_at DESC`
  );
  res.json(rows);
 }));

@@ -51,6 +51,8 @@ tags:
     description: The authenticated account's to-do list.
   - name: Subscriptions
     description: Trial/paid subscription lifecycle, including the Stripe checkout handoff.
+  - name: Support
+    description: Messages to support, from the client's support page.
 
 paths:
   /auth/register:
@@ -1080,6 +1082,56 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+
+  /support:
+    post:
+      tags: [Support]
+      summary: Send a message to support
+      description: >-
+        A-To-Do's support form (the client's support.html): billing, account
+        trouble, bugs, suggestions, complaints. Public -- it works logged
+        out, since someone who can't log in needs it most -- but a valid
+        bearer token, if sent, files the message under its account (an
+        invalid one is just ignored). Stored with the website's own contact
+        submissions (the admin app's Contact tab) and emailed to the
+        business owner. Rate-limited like `POST /auth/register`.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, email, kind, msg]
+              properties:
+                name: { type: string }
+                email: { type: string, format: email, description: Where the reply goes. }
+                kind: { type: string, enum: [billing, account, bug, feature, complaint, other] }
+                msg: { type: string, maxLength: 10000 }
+                context:
+                  type: object
+                  description: What helps diagnose a report; each at most 500 characters, anything else ignored.
+                  properties:
+                    appVersion: { type: string }
+                    page: { type: string }
+                    language: { type: string }
+                    userAgent: { type: string }
+      responses:
+        "201":
+          description: Received.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: string, format: uuid }
+                  receivedAt: { type: string, format: date-time }
+        "400":
+          description: A missing or invalid field.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              example: { code: INVALID_EMAIL, message: "Enter a valid email address." }
 
 components:
   securitySchemes:

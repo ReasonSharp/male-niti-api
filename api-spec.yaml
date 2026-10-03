@@ -1663,6 +1663,18 @@ components:
             id: { type: string, format: uuid, readOnly: true }
             completed: { type: boolean }
             received_at: { type: string, format: date-time, readOnly: true }
+            source:
+              type: string
+              enum: [maleniti, atodo]
+              readOnly: true
+              description: The website's own form, or A-To-Do's support page (POST /atodo/v1/support).
+            atodo_account_id: { type: string, format: uuid, nullable: true, readOnly: true, description: The A-To-Do account that sent it, if logged in. }
+            atodo_account_email: { type: string, nullable: true, readOnly: true }
+            context:
+              type: object
+              nullable: true
+              readOnly: true
+              description: What A-To-Do's client reported about itself (appVersion, page, language, userAgent).
 
     ApiKeyRotated:
       type: object
