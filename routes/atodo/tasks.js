@@ -1,195 +1,182 @@
 const express = require('express');
-const db = require('../../db');
 const asyncHandler = require('../../lib/asyncHandler');
+const { withState } = require('../../lib/atodo/domain/request');
+const { taskOccurrences, occurrenceDates } = require('../../lib/atodo/domain/views');
+const { taskSummary } = require('../../lib/atodo/domain/reports');
+const v = require('../../lib/atodo/domain/validate');
+
+// Mounted at /atodo/v1/tasks behind requireAtodoAuth (see routes/atodo/index.js).
+//
+// One task at a time: reading it (with its notes, log and occurrences) and
+// every action on it or one of its occurrences. Each action is applied by the
+// server's rules (lib/atodo/domain/account.js) in a transaction and answers
+// { changed: { taskIds, all }, active } -- which tasks changed, so the client
+// re-fetches what it shows of them, and the focused occurrence -- plus
+// whatever the action itself returns.
 
 const router = express.Router();
 
-// Mounted at /atodo/v1/tasks behind requireAtodoAuth (see routes/atodo/index.js).
-
-function toTask(row) {
- return {
-  id: row.id,
-  taskId: row.task_id,
-  seriesId: row.series_id,
-  seriesName: row.series_name,
-  name: row.name,
-  description: row.description,
-  details: row.details,
-  dueDate: row.due_date,
-  dueTime: row.due_time,
-  allDay: row.all_day,
-  appointment: row.appointment,
-  passive: row.passive,
-  recurUntilCompleted: row.recur_until_completed,
-  endDate: row.end_date,
-  frequency: row.frequency,
-  createdAt: Number(row.created_at),
-  statsResetAt: row.stats_reset_at === null ? null : Number(row.stats_reset_at),
-  log: row.log,
-  comments: row.comments,
- };
-}
-
-function toOccurrence(row) {
- return {
-  id: row.id,
-  taskId: row.task_id,
-  occurrenceDate: row.occurrence_date,
-  pendingReschedules: row.pending_reschedules,
-  status: row.status,
-  resolvedAt: row.resolved_at === null ? null : Number(row.resolved_at),
-  dismissed: row.dismissed,
-  manual: row.manual,
-  overrides: row.overrides,
-  details: row.details,
-  comments: row.comments,
-  log: row.log,
-  focusedSeconds: row.focused_seconds,
-  timerSeconds: row.timer_seconds,
-  timer: row.timer,
- };
-}
-
-async function fetchAll(queryable, accountId) {
- const [{ rows: taskRows }, { rows: occurrenceRows }] = await Promise.all([
-  queryable.query('SELECT * FROM atodo.tasks WHERE account_id = $1 ORDER BY created_at ASC', [accountId]),
-  queryable.query('SELECT * FROM atodo.occurrences WHERE account_id = $1 ORDER BY occurrence_date ASC', [accountId]),
- ]);
- return { tasks: taskRows.map(toTask), occurrences: occurrenceRows.map(toOccurrence) };
-}
-
-router.get('/', asyncHandler(async (req, res) => {
- res.json(await fetchAll(db, req.atodoAuth.id));
+// A task with everything about it: its fields, notes and activity, and its
+// occurrences (the editor's list, plus every recorded row's notes and log).
+router.get('/:taskId', asyncHandler(async (req, res) => {
+ await withState(req, res, { fullTaskIds: [req.params.taskId] }, (state) => {
+  const task = state.requireTask(req.params.taskId);
+  const extraDates = [].concat(req.query.extraDate || []).map((d) => v.date(d, 'extraDate'));
+  return {
+   task: { ...taskSummary(state, task), comments: task.comments, log: task.log, notesUsed: state.notesUsedFor(task), canAddNote: state.canAddNoteToTask(task) },
+   occurrenceList: taskOccurrences(state, task, extraDates),
+   occurrences: state.occurrences
+    .filter((o) => o.taskId === task.taskId)
+    .map((o) => ({
+     occurrenceDate: o.occurrenceDate,
+     status: o.status,
+     dismissed: o.dismissed,
+     manual: o.manual,
+     details: o.details,
+     comments: o.comments,
+     log: o.log,
+     focusedSeconds: o.focusedSeconds,
+     timerSeconds: o.timerSeconds,
+    })),
+   series: { seriesId: task.seriesId, name: state.getSeriesName(task.seriesId), mixed: state.isMixedSeries(task.seriesId) },
+  };
+ });
 }));
 
-router.put('/', asyncHandler(async (req, res) => {
- const { tasks, occurrences } = req.body || {};
- if (!Array.isArray(tasks) || !Array.isArray(occurrences)) {
-  return res.status(400).send('Expected { tasks: [...], occurrences: [...] }');
- }
+// The dates a task occurs on in [from, to] -- the pause and "Find
+// occurrence" calendars only offer these.
+router.get('/:taskId/dates', asyncHandler(async (req, res) => {
+ await withState(req, res, {}, (state) => {
+  const task = state.requireTask(req.params.taskId);
+  const from = v.date(req.query.from, 'from');
+  const to = v.date(req.query.to, 'to');
+  if (to < from) v.fail('to must not be before from');
+  if (Date.parse(to) - Date.parse(from) > 400 * 86400000) v.fail('to must be at most about a year after from');
+  return { dates: occurrenceDates(state, task, from, to), last: state.lastPossibleOccurrenceDate(task) };
+ });
+}));
 
- const client = await db.getClient();
- try {
-  await client.query('BEGIN');
+// An action on one task: handler(req, state) applies it (and may return
+// extra response fields). The task's notes and log are loaded in full.
+function action(handler, { status = 200, full = (req) => [req.params.taskId] } = {}) {
+ return asyncHandler(async (req, res) => {
+  await withState(req, res, { reportChanges: true, status, fullTaskIds: full(req) }, (state) => handler(req, state) || {});
+ });
+}
 
-  // Serializes concurrent PUTs for the same account (e.g. a client-side
-  // retry racing the original request, or a double-fire save) on a
-  // transaction-scoped advisory lock -- without it, two overlapping calls
-  // can both pass the DELETEs below seeing the other's not-yet-committed
-  // rows as absent, then both try to INSERT the same (account_id, id), and
-  // the second genuinely violates the primary key once the first commits.
-  // Both tables are replaced under the same lock/transaction so a save can
-  // never land tasks without their occurrences (or vice versa).
-  await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [req.atodoAuth.id]);
+const body = (req) => req.body || {};
+const occurrenceDate = (req) => v.date(req.params.date, 'date');
 
-  await client.query('DELETE FROM atodo.tasks WHERE account_id = $1', [req.atodoAuth.id]);
-  await client.query('DELETE FROM atodo.occurrences WHERE account_id = $1', [req.atodoAuth.id]);
+// Create. seriesId joins an existing series.
+router.post('/', action((req, state) => {
+ const b = body(req);
+ const task = state.createTask({ ...v.taskDetails(b), ...v.pattern(b), seriesId: typeof b.seriesId === 'string' ? b.seriesId : null });
+ return { taskId: task.taskId };
+}, { status: 201, full: () => [] }));
 
-  for (const task of tasks) {
-   await client.query(
-    `INSERT INTO atodo.tasks (
-      account_id, id, task_id, series_id, series_name, name, description, details,
-      due_date, due_time, all_day, appointment, passive, recur_until_completed,
-      end_date, frequency, created_at, log, comments, stats_reset_at
-     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
-     -- A duplicate id within the same request array (a client-side bug,
-     -- e.g. a botched export/merge) would otherwise violate the primary
-     -- key the same way -- last occurrence in the array wins instead.
-     ON CONFLICT (account_id, id) DO UPDATE SET
-      task_id = EXCLUDED.task_id,
-      series_id = EXCLUDED.series_id,
-      series_name = EXCLUDED.series_name,
-      name = EXCLUDED.name,
-      description = EXCLUDED.description,
-      details = EXCLUDED.details,
-      due_date = EXCLUDED.due_date,
-      due_time = EXCLUDED.due_time,
-      all_day = EXCLUDED.all_day,
-      appointment = EXCLUDED.appointment,
-      passive = EXCLUDED.passive,
-      recur_until_completed = EXCLUDED.recur_until_completed,
-      end_date = EXCLUDED.end_date,
-      frequency = EXCLUDED.frequency,
-      created_at = EXCLUDED.created_at,
-      log = EXCLUDED.log,
-      comments = EXCLUDED.comments,
-      stats_reset_at = EXCLUDED.stats_reset_at`,
-    [
-     req.atodoAuth.id,
-     task.id,
-     task.taskId,
-     task.seriesId,
-     task.seriesName ?? null,
-     task.name,
-     task.description ?? null,
-     task.details ?? null,
-     task.dueDate,
-     task.dueTime ?? null,
-     task.allDay,
-     task.appointment,
-     task.passive,
-     task.recurUntilCompleted ?? false,
-     task.endDate ?? null,
-     JSON.stringify(task.frequency),
-     task.createdAt,
-     JSON.stringify(task.log ?? []),
-     JSON.stringify(task.comments ?? []),
-     task.statsResetAt ?? null,
-    ]
-   );
-  }
+// The Details tab: name, description, details, time, zone, flags.
+router.patch('/:taskId', action((req, state) => {
+ state.editDetails(req.params.taskId, v.taskDetails(body(req)));
+}));
 
-  for (const occurrence of occurrences) {
-   await client.query(
-    `INSERT INTO atodo.occurrences (
-      account_id, id, task_id, occurrence_date, pending_reschedules, status,
-      resolved_at, dismissed, manual, overrides, details, comments, log, focused_seconds, timer_seconds, timer
-     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
-     ON CONFLICT (account_id, id) DO UPDATE SET
-      task_id = EXCLUDED.task_id,
-      occurrence_date = EXCLUDED.occurrence_date,
-      pending_reschedules = EXCLUDED.pending_reschedules,
-      status = EXCLUDED.status,
-      resolved_at = EXCLUDED.resolved_at,
-      dismissed = EXCLUDED.dismissed,
-      manual = EXCLUDED.manual,
-      overrides = EXCLUDED.overrides,
-      details = EXCLUDED.details,
-      comments = EXCLUDED.comments,
-      log = EXCLUDED.log,
-      focused_seconds = EXCLUDED.focused_seconds,
-      timer_seconds = EXCLUDED.timer_seconds,
-      timer = EXCLUDED.timer`,
-    [
-     req.atodoAuth.id,
-     occurrence.id,
-     occurrence.taskId,
-     occurrence.occurrenceDate,
-     occurrence.pendingReschedules ?? [],
-     occurrence.status ?? 'pending',
-     occurrence.resolvedAt ?? null,
-     occurrence.dismissed ?? false,
-     occurrence.manual ?? false,
-     occurrence.overrides ? JSON.stringify(occurrence.overrides) : null,
-     occurrence.details ?? null,
-     JSON.stringify(occurrence.comments ?? []),
-     JSON.stringify(occurrence.log ?? []),
-     occurrence.focusedSeconds ?? 0,
-     occurrence.timerSeconds ?? 0,
-     occurrence.timer ? JSON.stringify(occurrence.timer) : null,
-    ]
-   );
-  }
+// The Recurrence tab: the pattern, from today on.
+router.put('/:taskId/pattern', action((req, state) => {
+ state.applyPatternChange(req.params.taskId, v.pattern(body(req)));
+}));
 
-  await client.query('COMMIT');
- } catch (err) {
-  await client.query('ROLLBACK');
-  throw err;
- } finally {
-  client.release();
- }
+router.delete('/:taskId', action((req, state) => {
+ state.deleteTask(req.params.taskId);
+}));
 
- res.json(await fetchAll(db, req.atodoAuth.id));
+// The agenda's drag-to-reschedule.
+router.put('/:taskId/due-time', action((req, state) => {
+ state.setDueTime(req.params.taskId, v.time(body(req).dueTime, 'dueTime'));
+}));
+
+router.post('/:taskId/pause', action((req, state) => {
+ const b = body(req);
+ state.pause(req.params.taskId, v.date(b.from, 'from'), v.date(b.until, 'until'));
+}));
+
+router.post('/:taskId/resume', action((req, state) => {
+ state.resumeNow(req.params.taskId);
+}));
+
+router.post('/:taskId/reset-name', action((req, state) => {
+ state.resetNameToSeries(req.params.taskId);
+}));
+
+router.post('/:taskId/leave-series', action((req, state) => {
+ state.leaveSeries(req.params.taskId);
+}));
+
+// Task-level notes; an occurrence's own are under its date below. A note is
+// addressed by its timestamp (notes have no ids).
+router.post('/:taskId/notes', action((req, state) => {
+ state.addTaskNote(req.params.taskId, v.text(body(req).text, 'text', { required: true }).trim());
+}));
+router.patch('/:taskId/notes/:timestamp', action((req, state) => {
+ state.editNote(req.params.taskId, null, Number(req.params.timestamp), v.text(body(req).text, 'text', { required: true }).trim());
+}));
+router.delete('/:taskId/notes/:timestamp', action((req, state) => {
+ state.deleteNote(req.params.taskId, null, Number(req.params.timestamp));
+}));
+
+// An extra (manual) occurrence on any date.
+router.post('/:taskId/occurrences', action((req, state) => {
+ state.addManualOccurrence(req.params.taskId, v.date(body(req).date, 'date'));
+}));
+
+// --- One occurrence --------------------------------------------------------------
+
+const OCCURRENCE_ACTIONS = {
+ complete: 'complete',
+ reopen: 'reopen',
+ fail: 'fail',
+ unfail: 'unfail',
+ dismiss: 'dismiss',
+ restore: 'restore',
+};
+
+router.post('/:taskId/occurrences/:date/reschedule', action((req, state) => {
+ state.rescheduleOccurrence(req.params.taskId, occurrenceDate(req), v.date(body(req).date, 'date'));
+}));
+
+router.delete('/:taskId/occurrences/:date', action((req, state) => {
+ state.deleteOccurrence(req.params.taskId, occurrenceDate(req));
+}));
+
+router.put('/:taskId/occurrences/:date/details', action((req, state) => {
+ state.setOccurrenceDetails(req.params.taskId, occurrenceDate(req), v.text(body(req).details, 'details'));
+}));
+
+router.post('/:taskId/occurrences/:date/notes', action((req, state) => {
+ state.addOccurrenceNote(req.params.taskId, occurrenceDate(req), v.text(body(req).text, 'text', { required: true }).trim());
+}));
+router.patch('/:taskId/occurrences/:date/notes/:timestamp', action((req, state) => {
+ state.editNote(req.params.taskId, occurrenceDate(req), Number(req.params.timestamp), v.text(body(req).text, 'text', { required: true }).trim());
+}));
+router.delete('/:taskId/occurrences/:date/notes/:timestamp', action((req, state) => {
+ state.deleteNote(req.params.taskId, occurrenceDate(req), Number(req.params.timestamp));
+}));
+
+// Timer: start it (focusing the occurrence) or just set it for later.
+router.post('/:taskId/occurrences/:date/timer', action((req, state) => {
+ const b = body(req);
+ const countUp = !!b.countUp;
+ if (!countUp && !(Number(b.minutes) >= 1)) v.fail('minutes must be at least 1');
+ state.startTimer(req.params.taskId, occurrenceDate(req), { countUp, minutes: b.minutes, continuePastZero: !!b.continuePastZero, start: b.start !== false });
+}));
+router.delete('/:taskId/occurrences/:date/timer', action((req, state) => {
+ state.cancelTimer(req.params.taskId, occurrenceDate(req));
+}));
+
+// complete / reopen / fail / unfail / dismiss / restore -- last, so the
+// specific routes above win.
+router.post('/:taskId/occurrences/:date/:action', action((req, state) => {
+ const method = OCCURRENCE_ACTIONS[req.params.action];
+ if (!method) v.fail(`unknown action ${req.params.action}`);
+ state[method](req.params.taskId, occurrenceDate(req));
 }));
 
 module.exports = router;

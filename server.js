@@ -60,12 +60,10 @@ app.use(requireDbInSync);
 app.use(checkBanned);
 // Before express.json(): Stripe's signature check needs the raw body.
 app.post('/atodo/v1/stripe/webhook', express.raw({ type: 'application/json' }), atodoStripeWebhook);
-// PUT /atodo/v1/tasks sends an account's whole task list at once (every
-// task, occurrence, note and log entry -- see that route), which outgrows
-// express.json()'s 100 kB default for a well-used account; everything else
-// keeps the default. The TLS proxy allows the same for /atodo/v1/ (see
-// male-niti's tlsoffloader.conf, client_max_body_size).
-app.put('/atodo/v1/tasks', express.json({ limit: '10mb' }));
+// A-To-Do's data import arrives in chunks (routes/atodo/imports.js) of up to
+// 1 MB -- above express.json()'s 100 kB default, which everything else
+// keeps. (The TLS proxy's client_max_body_size for /atodo/v1/ allows more.)
+app.post('/atodo/v1/imports/:importId/chunks', express.json({ limit: '1mb' }));
 app.use(express.json());
 app.use(authenticate);
 app.use(rateLimiter.general);

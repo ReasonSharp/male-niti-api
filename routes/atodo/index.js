@@ -5,6 +5,8 @@ const usersRouter = require('./users');
 const tasksRouter = require('./tasks');
 const subscriptionsRouter = require('./subscriptions');
 const supportRouter = require('./support');
+const listsRouter = require('./lists');
+const importsRouter = require('./imports');
 
 const router = express.Router();
 
@@ -17,5 +19,9 @@ router.use('/tasks', requireAtodoAuth, tasksRouter);
 router.use('/subscriptions', requireAtodoAuth, subscriptionsRouter);
 // Public: logged out too (the account is attached when a token is sent).
 router.use('/support', supportRouter);
+router.use('/imports', requireAtodoAuth, importsRouter);
+// /days, /agenda, /focus, /manage, /series, /stats, /export -- last, since
+// it's mounted on the root.
+router.use(requireAtodoAuth, listsRouter);
 
 module.exports = router;
