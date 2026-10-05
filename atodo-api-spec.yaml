@@ -1080,7 +1080,8 @@ paths:
       description: >-
         A free account is limited to 10 one-off and 5 recurring tasks (402
         `TASK_LIMIT`). A `recurUntilCompleted` task starts on the first date
-        its pattern produces from `dueDate`.
+        its pattern produces from `dueDate`. A passive task can't recur until
+        completed (400 `VALIDATION_ERROR`).
       parameters:
         - { $ref: "#/components/parameters/XTimezone" }
       requestBody:
@@ -1149,6 +1150,8 @@ paths:
         Name, description, details, time, time zone and flags -- for every
         occurrence, past and future. Send every field (the tab's whole
         state); nothing changes (and nothing is logged) when none differs.
+        A `recurUntilCompleted` task can't be made passive (400
+        `VALIDATION_ERROR`) -- turn that off first (`PUT .../pattern`).
       parameters:
         - { $ref: "#/components/parameters/XTimezone" }
       requestBody:
@@ -1224,7 +1227,9 @@ paths:
         occurrence (unless that's still the blank next cycle, which is
         recomputed). Ends a plain task's pause. Turning a one-off into a
         recurring task or back counts against the free plan's limits like
-        creating one (402 `TASK_LIMIT`). Nothing changes when the pattern is
+        creating one (402 `TASK_LIMIT`). A passive task can't be made to
+        recur until completed (400 `VALIDATION_ERROR`) -- turn passive off
+        first (`PATCH /tasks/{taskId}`). Nothing changes when the pattern is
         the same.
       parameters:
         - { $ref: "#/components/parameters/XTimezone" }
@@ -2595,7 +2600,13 @@ components:
           description: Past-due becomes permanently "failed" instead of carrying over as overdue.
         passive:
           type: boolean
-          description: A plain reminder with no "done" state -- its checkbox means "mark failed" instead of complete (see Occurrence.status).
+          description: >-
+            A plain reminder: its checkbox means "mark failed" instead of
+            complete (see Occurrence.status). A timed one counts as done once
+            its due time has passed (derived, not stored) -- after its time
+            it's done or failed, before it pending or failed; an all-day one
+            carries over until marked failed or dismissed. Never together
+            with recurUntilCompleted.
         recurUntilCompleted:
           type: boolean
           description: >-

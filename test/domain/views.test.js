@@ -100,10 +100,38 @@ const itemsOn = (state, view, date) => {
  assert.strictEqual(appt.failed, true, 'appointment past its time fails');
  assert.ok(!appt.actions.includes('focus'), 'a failed appointment can\'t be focused');
  assert.strictEqual(pass.failed, false, 'passive task isn\'t failed by time');
- assert.strictEqual(pass.overdue, true, 'passive task is overdue');
+ assert.strictEqual(pass.overdue, false, 'a timed passive task isn\'t overdue past its time...');
+ assert.strictEqual(pass.completed, true, '...it\'s done');
  assert.ok(pass.actions.includes('fail') && !pass.actions.includes('complete'), 'passive: fail, not complete');
  state.fail('passive', '2026-10-05');
- assert.strictEqual(dayView(state, 'all', '2026-10-05').items.find((i) => i.taskId === 'passive').failed, true, 'passive marked failed');
+ const failed = dayView(state, 'all', '2026-10-05').items.find((i) => i.taskId === 'passive');
+ assert.ok(failed.failed && !failed.completed, 'after its time: done or failed -- marked failed');
+ state.unfail('passive', '2026-10-05');
+ const undone = dayView(state, 'all', '2026-10-05').items.find((i) => i.taskId === 'passive');
+ assert.ok(undone.completed && !undone.failed, '...and back to done');
+}
+
+// --- A timed passive task: pending (or failed) before its time, done (or failed) after ---
+
+{
+ const daily = task({ id: 'p', dueDate: '2026-10-01', dueTime: '12:00', passive: true });
+ const allDay = task({ id: 'a', dueDate: '2026-10-01', allDay: true, dueTime: null, passive: true, frequency: { type: 'once', interval: 1 } });
+ const state = makeState({ tasks: [daily, allDay], at: '2026-10-05T09:00' });
+ const today = () => dayView(state, 'all', '2026-10-05').items.find((i) => i.taskId === 'p');
+ assert.ok(!today().completed && !today().overdue && !today().failed, 'before its time: pending');
+ state.fail('p', '2026-10-05');
+ assert.ok(today().failed && !today().completed, 'before its time: failed');
+ state.unfail('p', '2026-10-05');
+ assert.ok(!today().completed && !today().failed, '...or not done again');
+ advance(state, '2026-10-05T12:30');
+ assert.ok(today().completed && !today().overdue, 'past its time: done by itself');
+ assert.deepStrictEqual(itemsOn(state, 'pending', '2026-10-04'), [], 'pending: done earlier ones aren\'t overdue');
+ assert.strictEqual(dayView(state, 'next-recurrence', '2026-10-04').date === '2026-10-04', false, 'next-recurrence: yesterday\'s done one isn\'t listed');
+ const allDayItem = dayView(state, 'all', '2026-10-01').items.find((i) => i.taskId === 'a');
+ assert.ok(allDayItem.overdue && !allDayItem.completed, 'an all-day passive task still carries over until marked failed or dismissed');
+ const { stats } = require('../../lib/atodo/domain/reports');
+ const st = stats(state, { kind: 'task', taskId: 'p' });
+ assert.strictEqual(st.completed, 5, 'stats count each done-by-time occurrence (Oct 1-5)');
 }
 
 // --- Focus exempts an appointment from failing --------------------------------

@@ -202,4 +202,14 @@ const throwsCode = (fn, code, message) => assert.throws(fn, (err) => err.code ==
  assert.strictEqual(subscribed.taskByTaskId('x').frequency.type, 'days', 'a subscriber has no limit');
 }
 
+// --- Passive and recur-until-completed don't go together ---------------------------
+
+{
+ const state = makeState({ tasks: [task({ id: 'p', passive: true }), task({ id: 'r', recurUntilCompleted: true })] });
+ const base = { name: 'x', dueDate: '2026-10-05', frequency: { type: 'days', interval: 1 }, endDate: null };
+ throwsCode(() => state.createTask({ ...base, passive: true, recurUntilCompleted: true }), 'VALIDATION_ERROR', 'not created both');
+ throwsCode(() => state.applyPatternChange('p', { ...base, recurUntilCompleted: true }), 'VALIDATION_ERROR', 'a passive task can\'t be made to recur until completed');
+ throwsCode(() => state.editDetails('r', { name: 'r', allDay: false, dueTime: '18:00', passive: true }), 'VALIDATION_ERROR', 'a recur-until-completed task can\'t be made passive');
+}
+
 console.log('account.test.js: all assertions passed');
