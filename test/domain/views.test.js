@@ -208,4 +208,17 @@ const itemsOn = (state, view, date) => {
  assert.deepStrictEqual(items.find((i) => i.locked).actions, ['stats'], 'a locked item only offers stats');
 }
 
+// --- The focused occurrence, as an item -------------------------------------------
+
+{
+ const { focusedItem } = require('../../lib/atodo/domain/views');
+ const daily = task({ id: 'f', dueDate: '2026-10-01', dueTime: '18:00' });
+ const state = makeState({ tasks: [daily], at: '2026-10-05T09:00' });
+ assert.strictEqual(focusedItem(state), null, 'nothing focused');
+ state.startTimer('f', '2026-10-05', { countUp: false, minutes: 25, continuePastZero: true, start: true });
+ const item = focusedItem(state);
+ assert.ok(item && item.taskId === 'f' && item.occurrenceDate === '2026-10-05' && item.active, 'the focused occurrence');
+ assert.ok(item.timer && item.timer.runningSince != null, '...with its running timer');
+}
+
 console.log('views.test.js: all assertions passed');

@@ -777,6 +777,14 @@ paths:
                         type: string
                         format: date
                         description: Today, in the user's time zone.
+                      focused:
+                        allOf: [{ $ref: "#/components/schemas/Item" }]
+                        nullable: true
+                        description: >-
+                          The focused occurrence, wherever it is (null: none)
+                          -- the only one whose timer can be running, so the
+                          client can show it while its own day isn't loaded or
+                          on screen.
         "400": { $ref: "#/components/responses/Invalid" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "429": { $ref: "#/components/responses/TooManyReads" }
@@ -809,6 +817,10 @@ paths:
                     required: [date, items]
                     properties:
                       date: { type: string, format: date }
+                      focused:
+                        allOf: [{ $ref: "#/components/schemas/Item" }]
+                        nullable: true
+                        description: As `GET /days`' `focused`.
                       items:
                         type: array
                         items:

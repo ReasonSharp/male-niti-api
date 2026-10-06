@@ -2,7 +2,7 @@ const express = require('express');
 const asyncHandler = require('../../lib/asyncHandler');
 const { withState } = require('../../lib/atodo/domain/request');
 const { DomainError } = require('../../lib/atodo/domain/account');
-const { dayView, agenda, VIEWS } = require('../../lib/atodo/domain/views');
+const { dayView, agenda, focusedItem, VIEWS } = require('../../lib/atodo/domain/views');
 const { stats, statsRecords, manageMonths, seriesDetail, exportData } = require('../../lib/atodo/domain/reports');
 const { toUser } = require('../../lib/atodo/token');
 const v = require('../../lib/atodo/domain/validate');
@@ -15,14 +15,15 @@ const v = require('../../lib/atodo/domain/validate');
 const router = express.Router();
 
 // One local day of a view -- or, if it has nothing, the nearest day that
-// does in `direction` -- with the nearest non-empty days either side.
+// does in `direction` -- with the nearest non-empty days either side, and
+// the focused occurrence (`focused`, wherever it is).
 router.get('/days', asyncHandler(async (req, res) => {
  await withState(req, res, {}, (state) => {
   const view = req.query.view || 'pending';
   if (!VIEWS.includes(view)) v.fail(`view must be one of ${VIEWS.join(', ')}`);
   const date = req.query.date ? v.date(req.query.date, 'date') : state.clock.todayISO;
   const direction = req.query.direction === 'before' ? 'before' : 'after';
-  return { ...dayView(state, view, date, direction), today: state.clock.todayISO };
+  return { ...dayView(state, view, date, direction), today: state.clock.todayISO, focused: focusedItem(state) };
  });
 }));
 
@@ -31,7 +32,7 @@ router.get('/days', asyncHandler(async (req, res) => {
 router.get('/agenda', asyncHandler(async (req, res) => {
  await withState(req, res, {}, (state) => {
   const date = req.query.date ? v.date(req.query.date, 'date') : state.clock.todayISO;
-  return { date, items: agenda(state, date) };
+  return { date, items: agenda(state, date), focused: focusedItem(state) };
  });
 }));
 
