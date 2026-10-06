@@ -158,9 +158,11 @@ const itemsOn = (state, view, date) => {
  assert.deepStrictEqual(itemsOn(state, 'all', '2026-10-04'), ['ruc@2026-10-04'], 'carried to the 4th');
  assert.deepStrictEqual(itemsOn(state, 'all', '2026-10-05'), ['ruc@2026-10-05'], 'carried to today');
  state.complete('ruc', '2026-10-05');
- // Done: shown on the occurrence's own date (its carried days are over).
- assert.deepStrictEqual(itemsOn(state, 'all', '2026-10-03'), ['ruc@2026-10-03+done'], 'done, on its own date');
- assert.deepStrictEqual(itemsOn(state, 'all', '2026-10-05'), [], 'no longer carried today');
+ // Done: shown on the day it was checked off (the chain is cut there), not
+ // on its first due date or the days it was carried over to before.
+ assert.deepStrictEqual(itemsOn(state, 'all', '2026-10-05'), ['ruc@2026-10-05+done'], 'done today, shown today');
+ assert.deepStrictEqual(itemsOn(state, 'all', '2026-10-03'), [], 'not on its first due date');
+ assert.deepStrictEqual(itemsOn(state, 'all', '2026-10-04'), [], 'nor on a day it was carried over to');
  assert.deepStrictEqual(itemsOn(state, 'all', '2026-10-12'), ['ruc@2026-10-12'], 'next cycle a week after completion');
  state.reopen('ruc', '2026-10-05');
  assert.deepStrictEqual(itemsOn(state, 'all', '2026-10-12'), [], 'reopening takes the next cycle back');
@@ -219,6 +221,28 @@ const itemsOn = (state, view, date) => {
  const item = focusedItem(state);
  assert.ok(item && item.taskId === 'f' && item.occurrenceDate === '2026-10-05' && item.active, 'the focused occurrence');
  assert.ok(item.timer && item.timer.runningSince != null, '...with its running timer');
+}
+
+// --- A carried-over recur-until-completed task checked off today stays on today, done ---
+
+{
+ const { agenda } = require('../../lib/atodo/domain/views');
+ const state = makeState({ tasks: [], at: '2026-10-02T09:00' });
+ const t = state.createTask({ name: 'r', dueDate: '2026-10-02', dueTime: '18:00', allDay: false, recurUntilCompleted: true, frequency: { type: 'days', interval: 6 }, endDate: null });
+ for (const day of ['2026-10-03', '2026-10-04', '2026-10-05']) {
+  advance(state, `${day}T09:00`);
+  state.runMaintenance();
+ }
+ const onToday = () => agenda(state, '2026-10-05').map((i) => `${i.taskId === t.taskId ? 'r' : '?'}${i.completed ? '+done' : ''}`);
+ assert.deepStrictEqual(onToday(), ['r'], 'carried over to today');
+ state.complete(t.taskId, '2026-10-05');
+ assert.deepStrictEqual(onToday(), ['r+done'], 'checked off: still on today, done');
+ assert.deepStrictEqual(itemsOn(state, 'all', '2026-10-05'), [`${t.taskId}@2026-10-05+done`], 'all view: on today, done');
+ assert.deepStrictEqual(itemsOn(state, 'all', '2026-10-02'), [], '...not on the day it was first due');
+ const listed = require('../../lib/atodo/domain/views').taskOccurrences(state, t).map((e) => `${e.date}:${e.status}`);
+ assert.ok(listed.includes('2026-10-05:completed') && !listed.some((e) => e.startsWith('2026-10-02')), 'the occurrence list has it on today, done');
+ state.reopen(t.taskId, '2026-10-05');
+ assert.deepStrictEqual(onToday(), ['r'], 'reopened: back, pending');
 }
 
 console.log('views.test.js: all assertions passed');
