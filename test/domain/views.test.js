@@ -245,4 +245,26 @@ const itemsOn = (state, view, date) => {
  assert.deepStrictEqual(onToday(), ['r'], 'reopened: back, pending');
 }
 
+// --- Auto timer: a recurring task's average measured time -------------------------
+
+{
+ const { autoTimerSeconds } = require('../../lib/atodo/domain/views');
+ const daily = task({ id: 'd', dueDate: '2026-10-01', dueTime: '18:00' });
+ const once = task({ id: 'o', dueDate: '2026-10-05', dueTime: '18:00', frequency: { type: 'once', interval: 1 } });
+ const fresh = task({ id: 'f', dueDate: '2026-10-01', dueTime: '18:00' });
+ const state = makeState({ tasks: [daily, once, fresh], at: '2026-10-05T09:00' });
+ state.ensureOccurrence(daily, '2026-10-02').focusedSeconds = 900;
+ state.ensureOccurrence(daily, '2026-10-03').timerSeconds = 1044;
+ state.ensureOccurrence(once, '2026-10-05').focusedSeconds = 600;
+ assert.strictEqual(autoTimerSeconds(state, daily), 972, 'the average of every measured occurrence: 16m 12s');
+ assert.strictEqual(autoTimerSeconds(state, once), null, 'not for a one-off');
+ assert.strictEqual(autoTimerSeconds(state, fresh), null, 'not for a task never measured');
+ const item = dayView(state, 'all', '2026-10-05').items.find((i) => i.taskId === 'd');
+ assert.strictEqual(item.autoTimerSeconds, 972, 'the item carries it');
+ assert.ok(item.actions.includes('autoTimer'), '...with the action');
+ assert.ok(!dayView(state, 'all', '2026-10-05').items.find((i) => i.taskId === 'f').actions.includes('autoTimer'), 'none for an unmeasured task');
+ state.startTimer('d', '2026-10-05', { countUp: false, seconds: 972, continuePastZero: true, start: true });
+ assert.strictEqual(state.findOccurrence(daily, '2026-10-05').timer.totalSeconds, 972, 'a timer of exact seconds');
+}
+
 console.log('views.test.js: all assertions passed');

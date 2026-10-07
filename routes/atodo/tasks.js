@@ -1,7 +1,8 @@
 const express = require('express');
 const asyncHandler = require('../../lib/asyncHandler');
 const { withState } = require('../../lib/atodo/domain/request');
-const { taskOccurrences, occurrenceDates } = require('../../lib/atodo/domain/views');
+const { taskOccurrences, occurrenceDates, autoTimerSeconds } = require('../../lib/atodo/domain/views');
+const { DomainError } = require('../../lib/atodo/domain/account');
 const { taskSummary } = require('../../lib/atodo/domain/reports');
 const v = require('../../lib/atodo/domain/validate');
 
@@ -163,8 +164,16 @@ router.delete('/:taskId/occurrences/:date/notes/:timestamp', action((req, state)
 }));
 
 // Timer: start it (focusing the occurrence) or just set it for later.
+// auto: the auto timer -- a countdown of the task's average measured time
+// (see views.autoTimerSeconds), started at once, continuing past zero.
 router.post('/:taskId/occurrences/:date/timer', action((req, state) => {
  const b = body(req);
+ if (b.auto) {
+  const seconds = autoTimerSeconds(state, state.requireTask(req.params.taskId));
+  if (!seconds) throw new DomainError('NO_AUTO_TIMER', "This task hasn't been measured yet, or doesn't recur.");
+  state.startTimer(req.params.taskId, occurrenceDate(req), { countUp: false, seconds, continuePastZero: b.continuePastZero !== false, start: true });
+  return;
+ }
  const countUp = !!b.countUp;
  if (!countUp && !(Number(b.minutes) >= 1)) v.fail('minutes must be at least 1');
  state.startTimer(req.params.taskId, occurrenceDate(req), { countUp, minutes: b.minutes, continuePastZero: !!b.continuePastZero, start: b.start !== false });

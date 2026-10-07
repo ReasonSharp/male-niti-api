@@ -1600,6 +1600,13 @@ paths:
             schema:
               type: object
               properties:
+                auto:
+                  type: boolean
+                  description: >-
+                    The auto timer: a countdown of the task's average measured
+                    time (`Item.autoTimerSeconds`), started at once and
+                    continuing past zero -- the other fields are ignored. 409
+                    `NO_AUTO_TIMER` for a task never measured or not recurring.
                 countUp: { type: boolean, default: false }
                 minutes: { type: integer, minimum: 1, maximum: 360, description: Required unless countUp. }
                 continuePastZero: { type: boolean, default: false }
@@ -2776,7 +2783,15 @@ components:
           type: array
           items:
             type: string
-            enum: [timer, pauseTimer, resumeTimer, cancelTimer, complete, reopen, fail, unfail, focus, unfocus, dismiss, restore, edit, pause, resume, stats]
+            enum: [timer, autoTimer, pauseTimer, resumeTimer, cancelTimer, complete, reopen, fail, unfail, focus, unfocus, dismiss, restore, edit, pause, resume, stats]
+        autoTimerSeconds:
+          type: integer
+          nullable: true
+          description: >-
+            A recurring task measured at least once: its average measured time
+            (focus and timer, over every measured occurrence -- the agenda's
+            block length too), which the `autoTimer` action starts a countdown
+            of. null otherwise.
 
     TaskDetailsInput:
       type: object
