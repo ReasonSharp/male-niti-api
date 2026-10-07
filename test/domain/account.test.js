@@ -212,4 +212,58 @@ const throwsCode = (fn, code, message) => assert.throws(fn, (err) => err.code ==
  throwsCode(() => state.editDetails('r', { name: 'r', allDay: false, dueTime: '18:00', passive: true }), 'VALIDATION_ERROR', 'a recur-until-completed task can\'t be made passive');
 }
 
+// --- Focus/timer sessions are recorded as they ran -------------------------------
+
+{
+ const { makeClock } = require('../../lib/atodo/domain/clock');
+ const t = task({ id: 's', dueDate: '2026-10-01', dueTime: '18:00' });
+ const state = makeState({ tasks: [t], at: '2026-10-05T09:00' });
+ const later = (ms) => {
+  state.clock = makeClock(state.clock.timeZone, state.clock.nowMs + ms);
+ };
+ const t0 = state.nowMs;
+ state.focus('s', '2026-10-05');
+ assert.ok(state.liveSession() && state.liveSession().kind === 'focus' && state.liveSession().startMs === t0, 'a running focus session is live, not recorded yet');
+ assert.strictEqual(state.newSessions.length, 0, '...nothing recorded while it runs');
+ later(10 * 60000);
+ state.unfocus();
+ assert.strictEqual(state.newSessions.length, 1, 'unfocusing records the session');
+ const [focusSession] = state.newSessions;
+ assert.deepStrictEqual([focusSession.kind, focusSession.startMs, focusSession.endMs, focusSession.seconds], ['focus', t0, t0 + 600000, 600], '...as it ran');
+ assert.strictEqual(state.findOccurrence(t, '2026-10-05').focusedSeconds, 600, '...and credits the occurrence');
+ assert.strictEqual(state.liveSession(), null, 'nothing running afterwards');
+
+ // A countdown that runs out is recorded only up to the moment it did.
+ later(60000);
+ const t1 = state.nowMs;
+ state.startTimer('s', '2026-10-05', { countUp: false, minutes: 5, continuePastZero: false, start: true });
+ assert.strictEqual(state.liveSession().kind, 'timer', 'a running timer is the live session');
+ later(20 * 60000);
+ state.expireFinishedTimers();
+ const timerSession = state.newSessions[1];
+ assert.deepStrictEqual([timerSession.kind, timerSession.startMs, timerSession.endMs, timerSession.seconds], ['timer', t1, t1 + 300000, 300], 'an expired timer: recorded up to its end');
+
+ // Deleting a stored session takes its time off the occurrence.
+ const occurrence = state.findOccurrence(t, '2026-10-05');
+ state.deleteFocusSession({ id: 7, occurrence_id: occurrence.id, kind: 'timer', seconds: 300 });
+ assert.strictEqual(occurrence.timerSeconds, 0, 'deleting a measurement subtracts it');
+ assert.deepStrictEqual(state.deletedSessionIds, ['7'], '...and deletes it by id');
+ throwsCode(() => state.deleteFocusSession({ id: 8, occurrence_id: 'gone', kind: 'focus', seconds: 1 }), 'SESSION_NOT_FOUND', 'a session of no occurrence: not found');
+
+ // A stats reset clears the scope's sessions with its totals.
+ state.resetStats([t]);
+ assert.ok(state.clearedSessionOccurrenceIds.has(occurrence.id), 'resetting stats clears the sessions too');
+}
+
+{
+ // Reopening a recur-until-completed cycle takes its successor's sessions.
+ const state = makeState({ tasks: [], at: '2026-10-05T09:00' });
+ const t = state.createTask({ name: 'r', dueDate: '2026-10-05', dueTime: '18:00', allDay: false, recurUntilCompleted: true, frequency: { type: 'days', interval: 3 }, endDate: null });
+ state.complete(t.taskId, '2026-10-05');
+ const successor = state.findOccurrence(t, null);
+ const reopened = state.occurrences.find((o) => o.status === 'completed');
+ state.reopen(t.taskId, '2026-10-05');
+ assert.deepStrictEqual(state.sessionMoves, [{ from: successor.id, to: reopened.id }], 'the successor\'s sessions move to the reopened occurrence');
+}
+
 console.log('account.test.js: all assertions passed');

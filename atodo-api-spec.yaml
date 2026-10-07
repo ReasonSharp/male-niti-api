@@ -821,6 +821,14 @@ paths:
                         allOf: [{ $ref: "#/components/schemas/Item" }]
                         nullable: true
                         description: As `GET /days`' `focused`.
+                      now: { $ref: "#/components/schemas/EpochMillis" }
+                      sessions:
+                        type: array
+                        description: >-
+                          Every focus/timer session that ran during the day,
+                          where it ran -- stored ones, and the one still
+                          running (`endMs: null`, `id: null`).
+                        items: { $ref: "#/components/schemas/FocusSession" }
                       items:
                         type: array
                         items:
@@ -833,6 +841,24 @@ paths:
                                 draggable: { type: boolean }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "429": { $ref: "#/components/responses/TooManyReads" }
+
+  /focus-sessions/{sessionId}:
+    delete:
+      tags: [Lists]
+      summary: Delete one focus/timer session (a bad measurement)
+      description: >-
+        Its seconds come off the occurrence's measured totals (stats and the
+        agenda's usual durations) too. 404 `SESSION_NOT_FOUND`.
+      parameters:
+        - { $ref: "#/components/parameters/XTimezone" }
+        - name: sessionId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { $ref: "#/components/responses/Action" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
 
   /focus:
     put:
@@ -2921,3 +2947,24 @@ components:
         activeTaskId: { type: string, nullable: true }
         activeOccurrenceDate: { type: string, format: date, nullable: true }
         todoViewMode: { type: string, enum: [pending, next-recurrence, all] }
+
+    FocusSession:
+      type: object
+      description: >-
+        A session of focus (focused without a timer) or timer time on an
+        occurrence, as it ran -- every one is recorded when it ends (focus
+        moves elsewhere, the timer is paused, cancelled or runs out); the
+        occurrence's totals are what stats read.
+      properties:
+        id: { type: string, nullable: true, description: "null: not stored yet (still running)" }
+        taskId: { type: string }
+        occurrenceDate: { type: string, format: date }
+        label: { type: string }
+        kind: { type: string, enum: [focus, timer] }
+        startMs: { $ref: "#/components/schemas/EpochMillis" }
+        endMs:
+          allOf: [{ $ref: "#/components/schemas/EpochMillis" }]
+          nullable: true
+          description: null while it's still running.
+        appointment: { type: boolean }
+        passive: { type: boolean }
