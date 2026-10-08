@@ -42,6 +42,11 @@ async function checkoutOffer(billingInterval) {
 // the price too, so the anchor goes into its custom text above the Pay
 // button -- in both languages, since Checkout picks its own from the
 // browser.
+// The trader's details a consumer must have before buying (Zakon o zaštiti
+// potrošača, čl. 60) -- also on the landing page's pricing and in the Terms;
+// below the Pay button, since the anchor price has the space above it.
+const SELLER_TEXT = 'Prodavatelj / Seller: Male Niti, zajednički obrt za usluge programiranja, vl. Nikola Novak i Mateja Šafarić Novak, Slakovec 80, 40305 Nedelišće, Hrvatska / Croatia · OIB 79072017892 · +385 91 933 7988 · support@maleniti.com';
+
 function anchorPriceText({ anchor_eur: anchor, billing_interval: interval }) {
  const hr = `${anchor.toFixed(2).replace('.', ',')} € ${interval === 'year' ? 'godišnje' : 'mjesečno'}`;
  const en = `€${anchor.toFixed(2)} per ${interval}`;
@@ -165,7 +170,10 @@ router.post('/checkout-sessions', asyncHandler(async (req, res) => {
    // the portal configuration in lib/atodo/portal.js).
    billing_mode: { type: 'flexible' },
   },
-  custom_text: { submit: { message: anchorPriceText(product.anchor_eur === null ? { ...product, anchor_eur: product.price_eur } : product) } },
+  custom_text: {
+   submit: { message: anchorPriceText(product.anchor_eur === null ? { ...product, anchor_eur: product.price_eur } : product) },
+   after_submit: { message: SELLER_TEXT },
+  },
   // successUrl carries Stripe's own {CHECKOUT_SESSION_ID} placeholder (see
   // the client's checkout.js), which it fills in on the way back.
   success_url: successUrl,
