@@ -98,7 +98,7 @@ const itemsOn = (state, view, date) => {
  const appt = items.find((i) => i.taskId === 'appt');
  const pass = items.find((i) => i.taskId === 'passive');
  assert.strictEqual(appt.failed, true, 'appointment past its time fails');
- assert.ok(!appt.actions.includes('focus'), 'a failed appointment can\'t be focused');
+ assert.ok(appt.actions.includes('focus') && appt.actions.includes('timer'), 'a failed appointment can still be focused and timed');
  assert.strictEqual(pass.failed, false, 'passive task isn\'t failed by time');
  assert.strictEqual(pass.overdue, false, 'a timed passive task isn\'t overdue past its time...');
  assert.strictEqual(pass.completed, true, '...it\'s done');
@@ -145,6 +145,24 @@ const itemsOn = (state, view, date) => {
  assert.strictEqual(item.failed, false, 'the focused appointment doesn\'t fail');
  assert.strictEqual(item.active, true, 'it\'s the active one');
  assert.ok(item.actions.includes('unfocus'), 'can be unfocused');
+}
+
+// --- A failed appointment can be worked on late ---------------------------------
+
+{
+ const appointment = task({ id: 'appt', frequency: { type: 'once', interval: 1 }, dueDate: '2026-10-05', dueTime: '08:00', appointment: true });
+ const state = makeState({ tasks: [appointment], at: '2026-10-05T09:00' });
+ assert.strictEqual(dayView(state, 'all', '2026-10-05').items[0].failed, true, 'past its time it has failed');
+ state.startTimer('appt', '2026-10-05', { countUp: true, start: true });
+ const item = dayView(state, 'all', '2026-10-05').items[0];
+ assert.strictEqual(item.active, true, 'timing it focuses it');
+ assert.strictEqual(item.failed, false, 'and it doesn\'t count as failed while focused');
+ state.unfocus();
+ const after = dayView(state, 'all', '2026-10-05').items[0];
+ assert.strictEqual(after.failed, true, 'unfocused, it has failed again');
+ assert.ok(after.actions.includes('resumeTimer'), 'its timer can be resumed');
+ state.focus('appt', '2026-10-05');
+ assert.strictEqual(state.active.taskId, 'appt', 'and it can be focused again');
 }
 
 // --- Recur until completed -----------------------------------------------------

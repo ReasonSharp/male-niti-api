@@ -869,8 +869,9 @@ paths:
         previously focused one -- its timer pauses, or its focus time is
         credited -- and starts this one's: its timer runs if it has one,
         otherwise focus time is measured. Only an occurrence due today or
-        carried over, not resolved, of a task that isn't passive or locked
-        can be focused (409 `NOT_FOCUSABLE`).
+        carried over, not done (a failed appointment can be, and doesn't
+        count as failed while focused), of a task that isn't passive or
+        locked can be focused (409 `NOT_FOCUSABLE`).
       parameters:
         - { $ref: "#/components/parameters/XTimezone" }
       requestBody:
