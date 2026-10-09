@@ -37,6 +37,13 @@ const FIELD_COLUMNS = {
 
 router.patch('/me', asyncHandler(async (req, res) => {
  const body = req.body || {};
+ // Any language there is (GET /atodo/v1/languages), or null to choose again.
+ if (body.language != null) {
+  const { rows: known } = typeof body.language === 'string'
+   ? await db.query('SELECT 1 FROM maleniti.language WHERE language_id = $1', [body.language])
+   : { rows: [] };
+  if (!known.length) return res.status(400).json({ code: 'VALIDATION_ERROR', message: 'language must be one of GET /atodo/v1/languages.' });
+ }
  const cols = [];
  const values = [];
 

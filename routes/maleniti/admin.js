@@ -6,12 +6,59 @@ const { publicationDeadline, isEditable, earliestNewChange } = require('../../li
 // /maleniti/v1/admin -- the admin app's editing of the maleniti schema
 // (migration 004: the business model behind the published price lists, see
 // routes/priceLists.js). Super admin only (mounted behind requireSuperAdmin
-// in server.js). Languages, points of sale, devices, brands and products
-// are plain CRUD (lib/maleniti/adminResource.js, texts as { hr, en }
-// objects); price lists, their versions and which point of sale uses which
-// list are written by hand below.
+// in server.js). Points of sale, devices, brands and products are plain
+// CRUD (lib/maleniti/adminResource.js, texts as { hr, en } objects), and so
+// is renaming a language; creating and deleting one, a brand client's
+// interface texts (migration 010, the Translations tab), price lists, their
+// versions and which point of sale uses which list are written by hand
+// below.
 
 const router = express.Router();
+
+// A new language starts as a copy of an existing one's texts (copy_from) --
+// every text there is, interface and business data alike -- so it's whole
+// from the start and gets translated in place. English (the fallback for a
+// missing text) and Croatian (the price lists' language) can't be deleted;
+// any other takes its texts with it, and its accounts go back to choosing
+// (migration 010).
+const LANGUAGE_RE = /^[a-z]{2}$/;
+const PERMANENT_LANGUAGES = ['en', 'hr'];
+
+router.post('/languages', adminHandler(async (req, res) => {
+ const body = req.body || {};
+ const languageId = typeof body.language_id === 'string' ? body.language_id.trim() : '';
+ const name = typeof body.name === 'string' ? body.name.trim() : '';
+ const copyFrom = body.copy_from || null;
+ if (!LANGUAGE_RE.test(languageId)) throw new HttpError(400, 'language_id must be a two-letter code, e.g. "de"');
+ if (!name) throw new HttpError(400, 'name is required');
+ const created = await inTransaction(async (client) => {
+  if (copyFrom) {
+   const { rows } = await client.query('SELECT 1 FROM maleniti.language WHERE language_id = $1', [copyFrom]);
+   if (!rows.length) throw new HttpError(400, `copy_from: no language ${copyFrom}`);
+  }
+  const { rows: [row] } = await client.query(
+   'INSERT INTO maleniti.language (language_id, name) VALUES ($1, $2) RETURNING language_id, name',
+   [languageId, name]
+  );
+  if (copyFrom) {
+   await client.query(
+    'INSERT INTO maleniti.translation (trid, language_id, text) SELECT trid, $1, text FROM maleniti.translation WHERE language_id = $2',
+    [languageId, copyFrom]
+   );
+  }
+  return row;
+ });
+ res.status(201).json(created);
+}));
+
+router.delete('/languages/:id', adminHandler(async (req, res) => {
+ if (PERMANENT_LANGUAGES.includes(req.params.id)) {
+  throw new HttpError(409, `${req.params.id} can't be deleted: English is the fallback for a missing text, Croatian the price lists' language.`);
+ }
+ const { rowCount } = await db.query('DELETE FROM maleniti.language WHERE language_id = $1', [req.params.id]);
+ if (!rowCount) throw new HttpError(404, 'No such language.');
+ res.status(204).send();
+}));
 
 router.use('/languages', adminResource({
  table: 'maleniti.language',
@@ -437,6 +484,60 @@ router.delete('/pos-price-lists/:id', adminHandler(async (req, res) => {
   await client.query('DELETE FROM maleniti.pos_price_list WHERE pos_price_list_id = $1', [req.params.id]);
  });
  res.sendStatus(204);
+}));
+
+// ---------------------------------------------------------------------------
+// Interface texts (migration 010): a brand client's named translation keys,
+// each in every language, for the admin app's Translations tab. A text is
+// set per language; deleting one makes the client fall back to English
+// (whose own texts can only be changed, not deleted).
+// ---------------------------------------------------------------------------
+
+router.get('/translations', adminHandler(async (req, res) => {
+ const brand = req.query.brand || 'atodo';
+ const { rows: [brandRow] } = await db.query('SELECT brand_id FROM maleniti.brand WHERE code = $1', [brand]);
+ if (!brandRow) throw new HttpError(404, `No brand ${brand}.`);
+ const { rows: languages } = await db.query('SELECT language_id, name FROM maleniti.language ORDER BY language_id');
+ const { rows: keys } = await db.query(
+  'SELECT trid, bundle, name FROM maleniti.translation_key WHERE brand_id = $1 ORDER BY bundle, name',
+  [brandRow.brand_id]
+ );
+ const { rows: texts } = await db.query(
+  'SELECT t.trid, t.language_id, t.text FROM maleniti.translation t JOIN maleniti.translation_key k USING (trid) WHERE k.brand_id = $1',
+  [brandRow.brand_id]
+ );
+ const byTrid = new Map(keys.map((k) => [k.trid, { ...k, texts: {} }]));
+ for (const t of texts) byTrid.get(t.trid).texts[t.language_id] = t.text;
+ res.json({ languages, keys: [...byTrid.values()] });
+}));
+
+async function namedKey(trid) {
+ const { rows: [key] } = await db.query('SELECT trid FROM maleniti.translation_key WHERE trid = $1 AND name IS NOT NULL', [trid]);
+ if (!key) throw new HttpError(404, 'No such interface text.');
+}
+
+router.put('/translations/:trid/:language', adminHandler(async (req, res) => {
+ const trid = Number(req.params.trid);
+ if (!Number.isInteger(trid)) throw new HttpError(400, 'trid must be a whole number');
+ const text = req.body && req.body.text;
+ if (typeof text !== 'string') throw new HttpError(400, 'text must be a string');
+ await namedKey(trid);
+ const { rows: [row] } = await db.query(
+  `INSERT INTO maleniti.translation (trid, language_id, text) VALUES ($1, $2, $3)
+   ON CONFLICT (trid, language_id) DO UPDATE SET text = EXCLUDED.text
+   RETURNING trid, language_id, text`,
+  [trid, req.params.language, text]
+ );
+ res.json(row);
+}));
+
+router.delete('/translations/:trid/:language', adminHandler(async (req, res) => {
+ const trid = Number(req.params.trid);
+ if (!Number.isInteger(trid)) throw new HttpError(400, 'trid must be a whole number');
+ if (req.params.language === 'en') throw new HttpError(409, 'English is the fallback for every other language: change it instead.');
+ await namedKey(trid);
+ await db.query('DELETE FROM maleniti.translation WHERE trid = $1 AND language_id = $2', [trid, req.params.language]);
+ res.status(204).send();
 }));
 
 module.exports = router;

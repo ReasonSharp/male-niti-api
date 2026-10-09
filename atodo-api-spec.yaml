@@ -73,6 +73,8 @@ tags:
     description: Trial/paid subscription lifecycle, including the Stripe checkout handoff.
   - name: Support
     description: Messages to support, from the client's support page.
+  - name: Translations
+    description: The client's interface texts and the languages they're in.
 
 paths:
   /auth/register:
@@ -493,8 +495,8 @@ paths:
                   nullable: true
                 language:
                   type: string
-                  enum: [en, hr]
                   nullable: true
+                  description: One of `GET /languages` (400 `VALIDATION_ERROR` otherwise), or null to choose again.
                 theme:
                   type: string
                   enum: [dark, light]
@@ -2075,6 +2077,77 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
+  /languages:
+    get:
+      tags: [Translations]
+      summary: Every language the interface is in
+      description: >-
+        For the client's language list (Settings) -- each language by its
+        own name ("hrvatski"). Languages are added in the admin app
+        (a new one starts as a copy of another's texts). Public.
+      security: []
+      responses:
+        "200":
+          description: The languages, by code.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  languages:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string, example: hr }
+                        name: { type: string, example: hrvatski }
+
+  /translations:
+    get:
+      tags: [Translations]
+      summary: The interface texts of a language
+      description: >-
+        Every text of the given bundles in a language, by key -- the client
+        has none built in. Bundles: `common` (every page), `app` (the to-do
+        app, including the activity log's `log.*` texts -- see LogEntry's
+        `key`), and one per marketing/legal page (`landing` -- with
+        `landing.videoUrl`, the walkthrough video's link -- `checkout`,
+        `success`, `cancel`, `faq`, `support`, `privacy`, `terms`). A text
+        the language lacks comes back in English; an unknown language is
+        English altogether. Texts may hold markup (the keys the client puts
+        through innerHTML) and `{name}` placeholders. Edited in the admin
+        app, so sent with `Cache-Control: no-cache` and an ETag: a reload
+        revalidates. Public.
+      security: []
+      parameters:
+        - name: lang
+          in: query
+          schema: { type: string, example: hr }
+        - name: bundles
+          in: query
+          required: true
+          description: Comma-separated.
+          schema: { type: string, example: "common,app" }
+      responses:
+        "200":
+          description: The texts.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  language:
+                    type: string
+                    description: The language the texts are in (`en` if the one asked for doesn't exist).
+                  strings:
+                    type: object
+                    additionalProperties: { type: string }
+        "400":
+          description: VALIDATION_ERROR -- no bundles named.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /support:
     post:
       tags: [Support]
@@ -2332,9 +2405,12 @@ components:
         background: { $ref: "#/components/schemas/Background" }
         language:
           type: string
-          enum: [en, hr]
           nullable: true
-          description: null means never chosen or IP-detected yet -- the client detects and PATCHes a real value the first time this is null right after login.
+          description: >-
+            A language code from `GET /languages`. null means never chosen
+            or IP-detected yet -- the client detects and PATCHes a real
+            value the first time this is null right after login. (A deleted
+            language turns it back to null.)
         theme:
           type: string
           enum: [dark, light]
@@ -2344,7 +2420,7 @@ components:
           minimum: 0
           maximum: 6
           nullable: true
-          description: First day of the week for calendars and weekday lists, 0=Sunday..6=Saturday. null means never chosen -- the client then follows the language (Monday for hr, Sunday for en).
+          description: First day of the week for calendars and weekday lists, 0=Sunday..6=Saturday. null means never chosen -- the client then follows the language (Sunday for en, Monday for any other).
         todoViewMode:
           type: string
           enum: [pending, next-recurrence, all]
@@ -2472,7 +2548,28 @@ components:
     LogEntry:
       type: object
       properties:
-        message: { type: string }
+        message:
+          type: string
+          description: >-
+            What happened, in English as the server writes it ("Marked
+            done", "Rescheduled to 2026-10-12") -- the log's own record.
+        key:
+          type: string
+          nullable: true
+          readOnly: true
+          description: >-
+            Responses only: the message's translation key (`log.markedDone`,
+            in the `app` bundle of `GET /translations`), for showing it in
+            the user's language -- older entries' wordings too. null for a
+            message it doesn't recognise, shown as written. Ignored in an
+            import.
+        params:
+          type: object
+          readOnly: true
+          additionalProperties: { type: string }
+          description: >-
+            Responses only -- the key's placeholders, e.g.
+            `{ "date": "2026-10-12" }`.
         timestamp: { $ref: "#/components/schemas/EpochMillis" }
         occurrenceDate:
           type: string

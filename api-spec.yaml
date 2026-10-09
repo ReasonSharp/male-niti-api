@@ -579,14 +579,22 @@ paths:
     post:
       summary: Create one of the languages
       description: >
-        The code (`language_id`) is given here and can't be changed afterwards; deleting a language any text still uses is refused.
+        The code (`language_id`, two letters) is given here and can't be changed afterwards. With `copy_from`, the
+        new language starts with a copy of that language's every text (A-To-Do's interface texts and the business
+        data's alike), to be translated in place; without, every text falls back to English until translated. A
+        new language is offered to A-To-Do's users at once (`GET /atodo/v1/languages`).
       operationId: createMalenitiLanguage
       security: [{ bearerAuth: [] }]
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/MalenitiLanguage' }
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/MalenitiLanguage'
+                - type: object
+                  properties:
+                    copy_from: { type: string, nullable: true, example: en, description: The language whose texts to copy. }
       responses:
         "201":
           description: Created
@@ -625,6 +633,9 @@ paths:
         "409": { description: A duplicate, or a reference to something that does not exist }
     delete:
       summary: Delete one of the languages
+      description: >
+        Takes every text in it along; A-To-Do accounts that used it go back to choosing a language. English (the
+        fallback for any missing text) and Croatian (the price lists' language) can't be deleted.
       operationId: deleteMalenitiLanguage
       security: [{ bearerAuth: [] }]
       responses:
@@ -632,7 +643,93 @@ paths:
         "401": { $ref: '#/components/responses/Unauthorized' }
         "403": { $ref: '#/components/responses/Forbidden' }
         "404": { description: Not found }
-        "409": { description: Still in use by another row (plain-text message naming it) }
+        "409": { description: English or Croatian (plain-text message) }
+
+  /maleniti/v1/admin/translations:
+    get:
+      summary: List a brand client's interface texts
+      description: >
+        Every named translation key of the brand (migration 010: A-To-Do's interface texts, which its client fetches
+        from `GET /atodo/v1/translations`) with its text in each language, and the languages -- the admin app's
+        Translations tab. A language a text is missing from shows English in the client.
+      operationId: listMalenitiTranslations
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: brand
+          in: query
+          schema: { type: string, default: atodo }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  languages: { type: array, items: { $ref: '#/components/schemas/MalenitiLanguage' } }
+                  keys:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        trid: { type: integer }
+                        bundle: { type: string, example: app, description: "Which part of the client loads it: common, app, or a page (landing, faq, ...)" }
+                        name: { type: string, example: todo.addTask }
+                        texts: { type: object, additionalProperties: { type: string }, example: { en: + Add task, hr: + Dodaj zadatak } }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { description: No such brand }
+  /maleniti/v1/admin/translations/{trid}/{language_id}:
+    parameters:
+      - name: trid
+        in: path
+        required: true
+        schema: { type: integer }
+      - name: language_id
+        in: path
+        required: true
+        schema: { type: string }
+    put:
+      summary: Set an interface text in a language
+      description: Creates or replaces it. Only a named key (an interface text); the business data's texts are edited with their rows.
+      operationId: setMalenitiTranslation
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  trid: { type: integer }
+                  language_id: { type: string }
+                  text: { type: string }
+        "400": { description: An invalid field (plain-text message) }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { description: No such interface text }
+        "409": { description: No such language }
+    delete:
+      summary: Remove an interface text from a language
+      description: The client then shows the English text. English's own texts can't be removed (only changed).
+      operationId: deleteMalenitiTranslation
+      security: [{ bearerAuth: [] }]
+      responses:
+        "204": { description: Removed }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { description: No such interface text }
+        "409": { description: An English text }
 
   /maleniti/v1/admin/points-of-sale:
     get:

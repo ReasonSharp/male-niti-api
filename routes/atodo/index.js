@@ -7,6 +7,7 @@ const subscriptionsRouter = require('./subscriptions');
 const supportRouter = require('./support');
 const listsRouter = require('./lists');
 const importsRouter = require('./imports');
+const i18nRouter = require('./i18n');
 
 const router = express.Router();
 
@@ -20,6 +21,8 @@ router.use('/subscriptions', requireAtodoAuth, subscriptionsRouter);
 // Public: logged out too (the account is attached when a token is sent).
 router.use('/support', supportRouter);
 router.use('/imports', requireAtodoAuth, importsRouter);
+// Public: the interface texts and languages (/translations, /languages).
+router.use(i18nRouter);
 // /days, /agenda, /focus, /manage, /series, /stats, /export -- last, since
 // it's mounted on the root.
 router.use(requireAtodoAuth, listsRouter);

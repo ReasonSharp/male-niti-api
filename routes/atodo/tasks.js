@@ -4,6 +4,7 @@ const { withState } = require('../../lib/atodo/domain/request');
 const { taskOccurrences, occurrenceDates, autoTimerSeconds } = require('../../lib/atodo/domain/views');
 const { DomainError } = require('../../lib/atodo/domain/account');
 const { taskSummary } = require('../../lib/atodo/domain/reports');
+const { describeLog } = require('../../lib/atodo/domain/logEntries');
 const v = require('../../lib/atodo/domain/validate');
 
 // Mounted at /atodo/v1/tasks behind requireAtodoAuth (see routes/atodo/index.js).
@@ -24,7 +25,7 @@ router.get('/:taskId', asyncHandler(async (req, res) => {
   const task = state.requireTask(req.params.taskId);
   const extraDates = [].concat(req.query.extraDate || []).map((d) => v.date(d, 'extraDate'));
   return {
-   task: { ...taskSummary(state, task), comments: task.comments, log: task.log, notesUsed: state.notesUsedFor(task), canAddNote: state.canAddNoteToTask(task) },
+   task: { ...taskSummary(state, task), comments: task.comments, log: describeLog(task.log), notesUsed: state.notesUsedFor(task), canAddNote: state.canAddNoteToTask(task) },
    occurrenceList: taskOccurrences(state, task, extraDates),
    occurrences: state.occurrences
     .filter((o) => o.taskId === task.taskId)
@@ -35,7 +36,7 @@ router.get('/:taskId', asyncHandler(async (req, res) => {
      manual: o.manual,
      details: o.details,
      comments: o.comments,
-     log: o.log,
+     log: describeLog(o.log),
      focusedSeconds: o.focusedSeconds,
      timerSeconds: o.timerSeconds,
     })),

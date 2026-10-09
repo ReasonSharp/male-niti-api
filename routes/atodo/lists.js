@@ -7,6 +7,7 @@ const { zonedInstant } = require('../../lib/atodo/domain/clock');
 const { nextDay } = require('../../lib/atodo/domain/account');
 const { stats, statsRecords, manageMonths, seriesDetail, exportData } = require('../../lib/atodo/domain/reports');
 const { toUser } = require('../../lib/atodo/token');
+const { describeLog } = require('../../lib/atodo/domain/logEntries');
 const v = require('../../lib/atodo/domain/validate');
 
 // Mounted at /atodo/v1 behind requireAtodoAuth (see routes/atodo/index.js):
@@ -107,10 +108,10 @@ router.get('/series/:seriesId', asyncHandler(async (req, res) => {
   const detail = seriesDetail(state, req.params.seriesId);
   if (withNotes) {
    const taskIds = new Set(members.map((t) => t.taskId));
-   detail.notes = members.map((t) => ({ taskId: t.taskId, name: t.name, dueDate: t.dueDate, comments: t.comments, log: t.log }));
+   detail.notes = members.map((t) => ({ taskId: t.taskId, name: t.name, dueDate: t.dueDate, comments: t.comments, log: describeLog(t.log) }));
    detail.occurrences = state.occurrences
     .filter((o) => taskIds.has(o.taskId) && (o.comments.length || o.log.length))
-    .map((o) => ({ taskId: o.taskId, occurrenceDate: o.occurrenceDate, comments: o.comments, log: o.log }));
+    .map((o) => ({ taskId: o.taskId, occurrenceDate: o.occurrenceDate, comments: o.comments, log: describeLog(o.log) }));
   }
   return detail;
  });
