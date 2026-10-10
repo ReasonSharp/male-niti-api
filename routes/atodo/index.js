@@ -8,6 +8,7 @@ const supportRouter = require('./support');
 const listsRouter = require('./lists');
 const importsRouter = require('./imports');
 const i18nRouter = require('./i18n');
+const legalRouter = require('./legal');
 
 const router = express.Router();
 
@@ -23,6 +24,8 @@ router.use('/support', supportRouter);
 router.use('/imports', requireAtodoAuth, importsRouter);
 // Public: the interface texts and languages (/translations, /languages).
 router.use(i18nRouter);
+// Public: the published Privacy Policy and Terms of Service (/legal/:kind).
+router.use(legalRouter);
 // /days, /agenda, /focus, /manage, /series, /stats, /export -- last, since
 // it's mounted on the root.
 router.use(requireAtodoAuth, listsRouter);

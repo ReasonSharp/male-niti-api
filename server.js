@@ -39,6 +39,7 @@ const { paymentsStatus, getFiscalConfig } = require('./lib/atodo/payments');
 const { startReceiptRetries } = require('./lib/atodo/fiscal/receipts');
 const { startPurging } = require('./lib/atodo/closedAccounts');
 const { startDbVersionChecks, requireDbInSync, onDbInSync, health } = require('./lib/dbVersion');
+const { startLegalNotices } = require('./lib/atodo/legalNotices');
 
 const app = express();
 const port = 50000;
@@ -117,6 +118,7 @@ onDbInSync(() => {
  backgroundJobsStarted = true;
  if (getFiscalConfig()) startReceiptRetries(getFiscalConfig());
  startPurging();
+ startLegalNotices();
 });
 
 app.listen(port, () => {

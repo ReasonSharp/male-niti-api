@@ -74,7 +74,7 @@ tags:
   - name: Support
     description: Messages to support, from the client's support page.
   - name: Translations
-    description: The client's interface texts and the languages they're in.
+    description: The client's interface texts, the languages they're in, and the published legal documents.
 
 paths:
   /auth/register:
@@ -2110,9 +2110,10 @@ paths:
         Every text of the given bundles in a language, by key -- the client
         has none built in. Bundles: `common` (every page), `app` (the to-do
         app, including the activity log's `log.*` texts -- see LogEntry's
-        `key`), and one per marketing/legal page (`landing` -- with
+        `key`), and one per marketing page (`landing` -- with
         `landing.videoUrl`, the walkthrough video's link -- `checkout`,
-        `success`, `cancel`, `faq`, `support`, `privacy`, `terms`). A text
+        `success`, `cancel`, `faq`, `support`); the Privacy Policy and Terms
+        of Service aren't interface texts (`GET /legal/{kind}`). A text
         the language lacks comes back in English; an unknown language is
         English altogether. Texts may hold markup (the keys the client puts
         through innerHTML) and `{name}` placeholders. Edited in the admin
@@ -2144,6 +2145,46 @@ paths:
                     additionalProperties: { type: string }
         "400":
           description: VALIDATION_ERROR -- no bundles named.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /legal/{kind}:
+    get:
+      tags: [Translations]
+      summary: The published Privacy Policy or Terms of Service
+      description: >-
+        The live version of a legal document, for the client's privacy.html
+        and terms.html: its title and body (HTML) in the language asked
+        for, else English (`language` says which), and when it was
+        published -- the "Last updated" date, the same in every language.
+        Written and published in the admin app; publishing makes a version
+        live at once (so no-cache) and emails every open account about the
+        change in its own language. Public.
+      security: []
+      parameters:
+        - name: kind
+          in: path
+          required: true
+          schema: { type: string, enum: [privacy, terms] }
+        - name: lang
+          in: query
+          schema: { type: string, example: hr }
+      responses:
+        "200":
+          description: The document.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  kind: { type: string, enum: [privacy, terms] }
+                  language: { type: string }
+                  title: { type: string }
+                  body: { type: string, description: HTML. }
+                  publishedAt: { type: string, format: date-time }
+        "404":
+          description: NOT_FOUND -- no such document.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }

@@ -722,6 +722,146 @@ paths:
         "401": { $ref: '#/components/responses/Unauthorized' }
         "403": { $ref: '#/components/responses/Forbidden' }
         "404": { description: No such brand }
+  /maleniti/v1/admin/legal/{kind}:
+    parameters:
+      - name: kind
+        in: path
+        required: true
+        schema: { type: string, enum: [privacy, terms] }
+      - name: brand
+        in: query
+        schema: { type: string, default: atodo }
+    get:
+      summary: A legal document, for editing
+      description: >
+        The Privacy Policy or Terms of Service (migration 011) as the admin app's Legal tab edits it: the live version
+        in every language, each language's working copy (saved, not published), every published version with which
+        languages it changed and how its notice emails went, and how many open accounts publishing would email.
+      operationId: getMalenitiLegalDocument
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  kind: { type: string }
+                  languages: { type: array, items: { $ref: '#/components/schemas/MalenitiLanguage' } }
+                  published:
+                    type: object
+                    nullable: true
+                    properties:
+                      publication_id: { type: integer }
+                      published_at: { type: string, format: date-time }
+                      published_by: { type: string, nullable: true }
+                      texts: { type: object, additionalProperties: { $ref: '#/components/schemas/MalenitiLegalText' } }
+                  drafts:
+                    type: object
+                    additionalProperties:
+                      type: object
+                      properties:
+                        title: { type: string }
+                        body: { type: string }
+                        summary: { type: string }
+                        updated_at: { type: string, format: date-time }
+                  publications:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        publication_id: { type: integer }
+                        published_at: { type: string, format: date-time }
+                        published_by: { type: string, nullable: true }
+                        changed_languages: { type: array, items: { type: string } }
+                        recipients: { type: integer }
+                        sent: { type: integer }
+                        failed: { type: integer, description: Given up on after 5 attempts }
+                  activeAccounts: { type: integer }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { description: No such document }
+  /maleniti/v1/admin/legal/{kind}/drafts/{language_id}:
+    parameters:
+      - name: kind
+        in: path
+        required: true
+        schema: { type: string, enum: [privacy, terms] }
+      - name: language_id
+        in: path
+        required: true
+        schema: { type: string }
+      - name: brand
+        in: query
+        schema: { type: string, default: atodo }
+    put:
+      summary: Save a language's working copy
+      description: Nothing is published -- the live version stays until the document is published.
+      operationId: saveMalenitiLegalDraft
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title, body]
+              properties:
+                title: { type: string }
+                body: { type: string, description: HTML }
+                summary: { type: string, description: "What's changed, in this language -- included in the notice email" }
+      responses:
+        "200": { description: Saved }
+        "400": { description: A missing or invalid field (plain-text message) }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { description: No such document }
+        "409": { description: No such language }
+    delete:
+      summary: Discard a language's working copy
+      operationId: discardMalenitiLegalDraft
+      security: [{ bearerAuth: [] }]
+      responses:
+        "204": { description: Discarded }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { description: No such document }
+  /maleniti/v1/admin/legal/{kind}/publish:
+    parameters:
+      - name: kind
+        in: path
+        required: true
+        schema: { type: string, enum: [privacy, terms] }
+      - name: brand
+        in: query
+        schema: { type: string, default: atodo }
+    post:
+      summary: Publish the working copies
+      description: >
+        A new version, live at once (its time is the pages' "Last updated"): every language's working copy, the live
+        text where there's none; the working copies go. Every open A-To-Do account is then emailed about it in its
+        own language, in the background (lib/atodo/legalNotices.js): the change, that language's summary (else
+        English's), its right to a refund of any charges made in the 14 days before and after it if it disagrees, and
+        that continued use means agreeing. Refused when no working copy changes anything.
+      operationId: publishMalenitiLegalDocument
+      security: [{ bearerAuth: [] }]
+      responses:
+        "201":
+          description: Published
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  publication_id: { type: integer }
+                  published_at: { type: string, format: date-time }
+                  changed_languages: { type: array, items: { type: string } }
+                  recipients: { type: integer, description: Notice emails queued }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { description: No such document }
+        "409": { description: Nothing to publish }
   /maleniti/v1/admin/translations/{trid}/{language_id}:
     parameters:
       - name: trid
@@ -1627,6 +1767,13 @@ components:
       description: One text per language (`maleniti.language`); Croatian required.
       additionalProperties: { type: string }
       example: { hr: Internetska prodaja, en: Online sales }
+    MalenitiLegalText:
+      type: object
+      properties:
+        title: { type: string }
+        body: { type: string, description: HTML }
+        changed: { type: boolean, description: This version changed it }
+        summary: { type: string }
     MalenitiLanguage:
       type: object
       required: [language_id, name]

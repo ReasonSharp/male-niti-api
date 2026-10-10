@@ -2,6 +2,8 @@ const express = require('express');
 const db = require('../../db');
 const { adminResource, adminHandler, HttpError, inTransaction } = require('../../lib/maleniti/adminResource');
 const { publicationDeadline, isEditable, earliestNewChange } = require('../../lib/maleniti/schedule');
+const legal = require('../../lib/maleniti/legal');
+const { kickLegalNotices } = require('../../lib/atodo/legalNotices');
 
 // /maleniti/v1/admin -- the admin app's editing of the maleniti schema
 // (migration 004: the business model behind the published price lists, see
@@ -600,6 +602,45 @@ router.delete('/translations/:trid/:language', adminHandler(async (req, res) => 
  await namedKey(trid);
  await db.query('DELETE FROM maleniti.translation WHERE trid = $1 AND language_id = $2', [trid, req.params.language]);
  res.status(204).send();
+}));
+
+// ---------------------------------------------------------------------------
+// Legal documents (migration 011): the Privacy Policy and Terms of Service,
+// for the admin app's Legal tab -- the live version and every earlier one
+// (with how their notice emails went), a working copy per language
+// (saving one publishes nothing), and publishing them: live at once, and
+// every open A-To-Do account emailed about it in its own language
+// (lib/atodo/legalNotices.js, sent in the background).
+// ---------------------------------------------------------------------------
+
+function legalHandler(fn) {
+ return adminHandler(async (req, res) => {
+  try {
+   await fn(req, res);
+  } catch (err) {
+   if (err instanceof legal.LegalError) throw new HttpError(err.status, err.message);
+   throw err;
+  }
+ });
+}
+
+router.get('/legal/:kind', legalHandler(async (req, res) => {
+ res.json(await legal.documentForAdmin(db, req.query.brand || 'atodo', req.params.kind));
+}));
+
+router.put('/legal/:kind/drafts/:language', legalHandler(async (req, res) => {
+ res.json(await legal.saveDraft(db, req.query.brand || 'atodo', req.params.kind, req.params.language, req.body || {}));
+}));
+
+router.delete('/legal/:kind/drafts/:language', legalHandler(async (req, res) => {
+ await legal.discardDraft(db, req.query.brand || 'atodo', req.params.kind, req.params.language);
+ res.status(204).send();
+}));
+
+router.post('/legal/:kind/publish', legalHandler(async (req, res) => {
+ const published = await inTransaction((client) => legal.publish(client, req.query.brand || 'atodo', req.params.kind, req.auth && req.auth.label));
+ kickLegalNotices();
+ res.status(201).json(published);
 }));
 
 module.exports = router;
