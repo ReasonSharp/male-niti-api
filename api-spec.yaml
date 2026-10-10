@@ -774,6 +774,7 @@ paths:
                         publication_id: { type: integer }
                         published_at: { type: string, format: date-time }
                         published_by: { type: string, nullable: true }
+                        substantial: { type: boolean, description: A change (emailed) rather than a correction }
                         changed_languages: { type: array, items: { type: string } }
                         recipients: { type: integer }
                         sent: { type: integer }
@@ -839,13 +840,25 @@ paths:
     post:
       summary: Publish the working copies
       description: >
-        A new version, live at once (its time is the pages' "Last updated"): every language's working copy, the live
-        text where there's none; the working copies go. Every open A-To-Do account is then emailed about it in its
-        own language, in the background (lib/atodo/legalNotices.js): the change, that language's summary (else
+        A new version, live at once: every language's working copy, the live text where there's none; the working
+        copies go. Either a change (`substantial: true`) -- to the document itself, so it has to be made in every
+        language (409 otherwise, naming the ones not changed yet: no one can tell which language's version a user
+        agreed to); its time becomes the pages' "Last updated", and every open A-To-Do account is emailed about it in
+        its own language, in the background (lib/atodo/legalNotices.js): the change, that language's summary (else
         English's), its right to a refund of any charges made in the 14 days before and after it if it disagrees, and
-        that continued use means agreeing. Refused when no working copy changes anything.
+        that continued use means agreeing -- or a correction (`substantial: false`: a typo, a mistranslation, any
+        languages), with no emails and "Last updated" kept. Refused when no working copy changes anything.
       operationId: publishMalenitiLegalDocument
       security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [substantial]
+              properties:
+                substantial: { type: boolean, description: "true: a change (every language, everyone emailed); false: a correction (no emails)" }
       responses:
         "201":
           description: Published
@@ -856,12 +869,14 @@ paths:
                 properties:
                   publication_id: { type: integer }
                   published_at: { type: string, format: date-time }
+                  substantial: { type: boolean }
                   changed_languages: { type: array, items: { type: string } }
-                  recipients: { type: integer, description: Notice emails queued }
+                  recipients: { type: integer, description: Notice emails queued (0 for a correction) }
         "401": { $ref: '#/components/responses/Unauthorized' }
         "403": { $ref: '#/components/responses/Forbidden' }
+        "400": { description: "`substantial` missing" }
         "404": { description: No such document }
-        "409": { description: Nothing to publish }
+        "409": { description: Nothing to publish, or a change not made in every language }
   /maleniti/v1/admin/translations/{trid}/{language_id}:
     parameters:
       - name: trid

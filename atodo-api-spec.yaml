@@ -2156,11 +2156,13 @@ paths:
       description: >-
         The live version of a legal document, for the client's privacy.html
         and terms.html: its title and body (HTML) in the language asked
-        for, else English (`language` says which), and when it was
-        published -- the "Last updated" date, the same in every language.
-        Written and published in the admin app; publishing makes a version
-        live at once (so no-cache) and emails every open account about the
-        change in its own language. Public.
+        for, else English (`language` says which), and `publishedAt`, the
+        "Last updated" date: when the document last changed, the same in
+        every language (a correction published since -- a typo, a
+        mistranslation -- doesn't move it). Written and published in the
+        admin app; a version is live the moment it's published (so
+        no-cache), and a change is emailed to every open account in its
+        own language. Public.
       security: []
       parameters:
         - name: kind

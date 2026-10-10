@@ -608,9 +608,10 @@ router.delete('/translations/:trid/:language', adminHandler(async (req, res) => 
 // Legal documents (migration 011): the Privacy Policy and Terms of Service,
 // for the admin app's Legal tab -- the live version and every earlier one
 // (with how their notice emails went), a working copy per language
-// (saving one publishes nothing), and publishing them: live at once, and
-// every open A-To-Do account emailed about it in its own language
-// (lib/atodo/legalNotices.js, sent in the background).
+// (saving one publishes nothing), and publishing them, live at once: a
+// change -- in every language, every open A-To-Do account emailed about it
+// in its own (lib/atodo/legalNotices.js, sent in the background) -- or a
+// correction, without emails.
 // ---------------------------------------------------------------------------
 
 function legalHandler(fn) {
@@ -637,9 +638,12 @@ router.delete('/legal/:kind/drafts/:language', legalHandler(async (req, res) => 
  res.status(204).send();
 }));
 
+// Body { substantial }: true for a change (every language, everyone
+// emailed), false for a correction (no emails).
 router.post('/legal/:kind/publish', legalHandler(async (req, res) => {
- const published = await inTransaction((client) => legal.publish(client, req.query.brand || 'atodo', req.params.kind, req.auth && req.auth.label));
- kickLegalNotices();
+ const { substantial } = req.body || {};
+ const published = await inTransaction((client) => legal.publish(client, req.query.brand || 'atodo', req.params.kind, req.auth && req.auth.label, { substantial }));
+ if (published.substantial) kickLegalNotices();
  res.status(201).json(published);
 }));
 
