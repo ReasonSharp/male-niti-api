@@ -9,6 +9,8 @@ const { paymentsStatus } = require('../../lib/atodo/payments');
 const { confirmCheckoutSession } = require('../../lib/atodo/billing');
 const { createPortalSession } = require('../../lib/atodo/portal');
 
+const { recordAccountEvent } = require('../../lib/atodo/accountEvents');
+
 const router = express.Router();
 
 // Mounted at /atodo/v1/subscriptions behind requireAtodoAuth (see routes/atodo/index.js).
@@ -78,6 +80,7 @@ router.post('/trial', asyncHandler(async (req, res) => {
   if (existing.length === 0) return res.status(401).json({ code: 'UNAUTHENTICATED', message: 'Missing or invalid bearer token.' });
   return res.status(409).json({ code: 'TRIAL_UNAVAILABLE', message: 'This account has already had a trial or a subscription.' });
  }
+ await recordAccountEvent(req.atodoAuth.id, 'subscription.trial_started', { until: expiresAt });
 
  res.json({ token: issueToken(rows[0]), user: toUser(rows[0]) });
 }));
@@ -264,6 +267,7 @@ router.post('/cancel', asyncHandler(async (req, res) => {
   [account.id]
  );
 
+ await recordAccountEvent(req.atodoAuth.id, 'subscription.cancelled', { endsAt: updated[0].subscription_expires_at });
  res.json({ token: issueToken(updated[0]), user: toUser(updated[0]) });
 }));
 
@@ -301,6 +305,7 @@ router.post('/resume', asyncHandler(async (req, res) => {
    WHERE id = $1 RETURNING *`,
   [account.id]
  );
+ await recordAccountEvent(req.atodoAuth.id, 'subscription.resumed');
  res.json({ token: issueToken(updated[0]), user: toUser(updated[0]) });
 }));
 

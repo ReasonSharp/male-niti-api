@@ -8,22 +8,13 @@ const { hashPassword, verifyPassword } = require('../../lib/atodo/password');
 const { toUser, issueToken, toPasswordVersion } = require('../../lib/atodo/token');
 const { reopenAccount } = require('../../lib/atodo/closedAccounts');
 const { enforceLifecycleDeletion } = require('../../lib/atodo/lifecycle');
-const sendEmail = require('../../lib/atodo/mailer');
 const jwt = require('../../lib/atodo/jwt');
-const { buildFrontendLink } = require('../../lib/atodo/links');
-const { renderEmail } = require('../../lib/atodo/emailTemplate');
+const { sendVerificationEmail, sendPasswordResetEmail } = require('../../lib/atodo/accountEmails');
+const { recordAccountEvent } = require('../../lib/atodo/accountEvents');
 
 const router = express.Router();
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
-// handleEmailVerificationLink() in the atodo client reads this `verify`
-// param -- see lib/atodo/links.js. A registration started from the landing
-// page's pricing buttons carries its plan along (next=checkout&plan=...,
-// the same params the client's own login flow continues to checkout on).
-function buildVerificationLink(token, checkoutPlan) {
- return buildFrontendLink('verify', token, checkoutPlan ? { next: 'checkout', plan: checkoutPlan } : {});
-}
 
 const CHECKOUT_PLANS = ['monthly', 'annual'];
 
@@ -63,13 +54,7 @@ router.post('/register', rateLimiter.strict, asyncHandler(async (req, res) => {
   [email, hashPassword(password), token, plan]
  );
 
- const verificationEmail = renderEmail({
-  heading: 'Verify your A-To-Do account',
-  paragraphs: ['Welcome! Confirm your email address to activate your A-To-Do account. The link is valid for 6 hours.'],
-  action: { label: 'Verify your email', url: buildVerificationLink(token, plan) },
-  afterAction: ["If you didn't sign up for A-To-Do, just ignore this email."],
- });
- sendEmail(email, 'Verify your A-To-Do account', verificationEmail.text, verificationEmail.html);
+ sendVerificationEmail(email, token, plan);
 
  res.status(202).send();
 }));
@@ -107,16 +92,19 @@ router.post('/verify-email', asyncHandler(async (req, res) => {
   [pending.email, pending.password_hash]
  );
  if (created.length === 0) return res.status(200).json({ email: pending.email });
+ await recordAccountEvent(created[0].id, 'account.created');
 
  res.status(200).json({ email: pending.email, token: issueToken(created[0]), user: toUser(created[0]) });
 }));
 
 // ---------------------------------------------------------------------------
-// Login-email changes (started by POST /users/me/change-email) -- all three
-// public, since each is reached from an emailed link rather than a session.
+// Login-email changes (started by POST /users/me/change-email) and password
+// resets -- public, since each is reached from an emailed link rather than
+// a session. (An email change can't be undone from a link -- that could be
+// abused; whoever finds their email changed without them writes to
+// support, which sets it back from the admin app.)
 // ---------------------------------------------------------------------------
 
-const PASSWORD_RESET_TTL_SECONDS = 60 * 60;
 const invalidLink = (res) =>
  res.status(400).json({ code: 'INVALID_TOKEN', message: 'That link is invalid, has expired, or has already been used.' });
 const emailTaken = (res) => res.status(409).json({ code: 'EMAIL_TAKEN', message: 'An account with that email already exists.' });
@@ -161,89 +149,27 @@ router.post('/verify-email-change', rateLimiter.strict, asyncHandler(async (req,
  // Whoever just proved they own this inbox wins it over a stale, unverified
  // registration of the same address.
  await db.query('DELETE FROM atodo.pending_registrations WHERE email = $1', [newEmail]);
+ await recordAccountEvent(account.id, 'email.changed', { from: account.email, to: newEmail });
 
  res.json({ email: newEmail });
 }));
 
-// The link emailed to the OLD address. See atodo-api-spec.yaml: restores it,
-// cancels any pending change, ends every session, and hands back a
-// short-lived password-reset token (bound to the new password version, so
-// single-use).
-router.post('/undo-email-change', rateLimiter.strict, asyncHandler(async (req, res) => {
- const payload = jwt.verify((req.body || {}).token);
- if (!payload || payload.purpose !== 'email-change-undo' || !payload.acct) return invalidLink(res);
-
- const { rows } = await db.query('SELECT * FROM atodo.accounts WHERE id = $1', [payload.acct]);
- if (rows.length === 0) return invalidLink(res);
- const account = rows[0];
- // Only the latest change request's link, and only once -- an undo (or a
- // newer request) moves email_change_requested_at on.
- const requestedAt = account.email_change_requested_at ? new Date(account.email_change_requested_at).getTime() : null;
- if (requestedAt !== payload.req) return invalidLink(res);
-
- if (account.email !== payload.oldEmail) {
-  const { rows: taken } = await db.query('SELECT 1 FROM atodo.accounts WHERE email = $1 AND id <> $2', [payload.oldEmail, account.id]);
-  if (taken.length > 0) return emailTaken(res);
- }
- let restored;
- try {
-  ({ rows: [restored] } = await db.query(
-   `UPDATE atodo.accounts SET
-     email = $1,
-     pending_email = NULL, pending_email_token = NULL, pending_email_expires_at = NULL,
-     email_change_requested_at = NULL,
-     password_changed_at = now()
-    WHERE id = $2 RETURNING *`,
-   [payload.oldEmail, account.id]
-  ));
- } catch (err) {
-  if (err.code === '23505') return emailTaken(res);
-  throw err;
- }
-
- const resetToken = jwt.sign({ purpose: 'password-reset', acct: account.id, pwv: toPasswordVersion(restored) }, PASSWORD_RESET_TTL_SECONDS);
- const undoneEmail = renderEmail({
-  heading: 'Your login email change was undone',
-  paragraphs: [
-   `Your A-To-Do login email is ${payload.oldEmail} again, and every session has been signed out.`,
-   "If you didn't finish setting a new password right after undoing the change, change it now in Settings -- whoever changed your email may know your current one.",
-  ],
- });
- sendEmail(payload.oldEmail, 'Your A-To-Do login email change was undone', undoneEmail.text, undoneEmail.html);
-
- res.json({ email: payload.oldEmail, resetToken });
-}));
-
 // "Forgot password?": emails a link to set a new password without the
-// current one -- valid for 30 minutes, and once: the token is bound to the
-// account's password version, so setting a new password (or any other
-// change of it) voids it, along with any other unused link. Always the same
-// 202, whether or not the email has an account (open or closed), so this
-// can't be used to find out which ones do. The link lands on the client's
-// `?resetPassword=` handling, which ends at POST /auth/reset-password.
-const FORGOT_PASSWORD_TTL_SECONDS = 30 * 60;
+// current one (lib/atodo/accountEmails.js: valid for 30 minutes, once).
+// Always the same 202, whether or not the email has an account (open or
+// closed), so this can't be used to find out which ones do.
 router.post('/forgot-password', rateLimiter.strict, asyncHandler(async (req, res) => {
  const email = typeof (req.body || {}).email === 'string' ? req.body.email.trim() : '';
  if (!EMAIL_RE.test(email)) {
   return res.status(400).json({ code: 'INVALID_EMAIL', message: 'Enter a valid email address.' });
  }
  const { rows } = await db.query('SELECT * FROM atodo.accounts WHERE email = $1', [email]);
- if (rows.length > 0) {
-  const account = rows[0];
-  const token = jwt.sign({ purpose: 'password-reset', acct: account.id, pwv: toPasswordVersion(account) }, FORGOT_PASSWORD_TTL_SECONDS);
-  const resetEmail = renderEmail({
-   heading: 'Reset your A-To-Do password',
-   paragraphs: [`Someone -- hopefully you -- asked to reset the password for ${account.email}. Set a new one with the link below. It's valid for 30 minutes and works once.`],
-   action: { label: 'Set a new password', url: buildFrontendLink('resetPassword', token) },
-   afterAction: ["If you didn't ask for this, just ignore this email -- your password stays as it is."],
-  });
-  sendEmail(account.email, 'Reset your A-To-Do password', resetEmail.text, resetEmail.html);
- }
+ if (rows.length > 0) sendPasswordResetEmail(rows[0]);
  res.status(202).send();
 }));
 
 // Sets a new password with a reset token -- from a "Forgot password?" link
-// (POST /auth/forgot-password) or the one /undo-email-change hands out; no
+// (POST /auth/forgot-password, or one support sent from the admin app); no
 // current password needed, which is the point. Logs this session in. A
 // closed (deleted) account is reopened, empty, the same way logging in to
 // it does (`restored: true`); one that's due for automatic deletion is
@@ -274,6 +200,8 @@ router.post('/reset-password', rateLimiter.strict, asyncHandler(async (req, res)
    WHERE id = $2 RETURNING *`,
   [hashPassword(newPassword), payload.acct]
  );
+ if (restored) await recordAccountEvent(payload.acct, 'account.reopened', { via: 'password reset' });
+ await recordAccountEvent(payload.acct, 'password.reset');
  res.json({ token: issueToken(updated[0]), user: toUser(updated[0]), ...(restored ? { restored: true } : {}) });
 }));
 
@@ -304,6 +232,7 @@ router.post('/login', rateLimiter.strict, asyncHandler(async (req, res) => {
  // to say so.
  if (account.closed_at) {
   const reopened = await reopenAccount(account.id);
+  await recordAccountEvent(reopened.id, 'account.reopened', { via: 'login' });
   return res.json({ token: issueToken(reopened), user: toUser(reopened), restored: true });
  }
 

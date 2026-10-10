@@ -5,16 +5,16 @@ const { toUser, issueToken } = require('../../lib/atodo/token');
 const { hashPassword, verifyPassword } = require('../../lib/atodo/password');
 const crypto = require('crypto');
 const rateLimiter = require('../../lib/rateLimiter');
-const jwt = require('../../lib/atodo/jwt');
 const sendEmail = require('../../lib/atodo/mailer');
 const { buildFrontendLink } = require('../../lib/atodo/links');
 const { getStripe } = require('../../lib/atodo/stripe');
 const { renderEmail } = require('../../lib/atodo/emailTemplate');
 const { closeAccount } = require('../../lib/atodo/closedAccounts');
+const { supportLink } = require('../../lib/atodo/accountEmails');
+const { recordAccountEvent } = require('../../lib/atodo/accountEvents');
 
 // Same check as routes/atodo/auth.js's registration.
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const UNDO_EMAIL_CHANGE_TTL_SECONDS = 30 * 24 * 60 * 60;
 
 const router = express.Router();
 
@@ -92,15 +92,16 @@ router.post('/me/change-password', asyncHandler(async (req, res) => {
   'UPDATE atodo.accounts SET password_hash = $1, password_changed_at = now() WHERE id = $2 RETURNING *',
   [hashPassword(newPassword), account.id]
  );
+ await recordAccountEvent(account.id, 'password.changed');
 
  res.json({ token: issueToken(updated[0]) });
 }));
 
 // Starts a login-email change -- see atodo-api-spec.yaml. Nothing about the
 // login email itself changes here: the new address has to be verified first
-// (POST /auth/verify-email-change), and the old one gets an undo link (POST
-// /auth/undo-email-change) whose signed token pins exactly this request via
-// email_change_requested_at.
+// (POST /auth/verify-email-change), and the old one is told -- with no link
+// to undo it (that could be abused): if it wasn't them, they write to
+// support, who can set the email back from the admin app.
 router.post('/me/change-email', rateLimiter.strict, asyncHandler(async (req, res) => {
  const { newEmail, currentPassword } = req.body || {};
  const email = typeof newEmail === 'string' ? newEmail.trim() : '';
@@ -138,15 +139,7 @@ router.post('/me/change-email', rateLimiter.strict, asyncHandler(async (req, res
   [email, verifyToken, requestedAt, account.id]
  );
 
- // Signed, not stored: everything the undo needs travels in the token
- // itself. `purpose` (and no `sub`) keeps it from ever passing as a session
- // token -- see lib/atodo/authenticate.js.
- const undoToken = jwt.sign(
-  { purpose: 'email-change-undo', acct: account.id, oldEmail: account.email, newEmail: email, req: requestedAt.getTime() },
-  UNDO_EMAIL_CHANGE_TTL_SECONDS
- );
  const verifyLink = buildFrontendLink('verifyEmailChange', verifyToken);
- const undoLink = buildFrontendLink('undoEmailChange', undoToken);
 
  const confirmEmail = renderEmail({
   heading: 'Confirm your new login email',
@@ -162,12 +155,13 @@ router.post('/me/change-email', rateLimiter.strict, asyncHandler(async (req, res
  const noticeEmail = renderEmail({
   heading: 'Your login email is being changed',
   paragraphs: [
-   `Someone asked to change your A-To-Do login email from ${account.email} to ${email}.`,
-   "If that was you, there's nothing to do. If it wasn't, undo the change right away -- it restores this address and has you set a new password. The link is valid for 30 days.",
+   `Someone asked to change your A-To-Do login email from ${account.email} to ${email}. Once the new address is confirmed, you log in with it.`,
+   "If that was you, there's nothing to do. If it wasn't, write to support right away -- through the support form below, or at support@maleniti.com -- and we'll help you get your account back. Changing your password in Settings now keeps whoever did this out.",
   ],
-  action: { label: 'Undo the change', url: undoLink },
+  action: { label: 'Contact support', url: supportLink() },
  });
  sendEmail(account.email, 'Your A-To-Do login email is being changed', noticeEmail.text, noticeEmail.html);
+ await recordAccountEvent(account.id, 'email.change_requested', { from: account.email, to: email });
 
  res.json(toUser(updated[0]));
 }));
@@ -209,6 +203,7 @@ router.post('/me/schedule-deletion', asyncHandler(async (req, res) => {
    WHERE id = $1 RETURNING *`,
   [account.id]
  );
+ await recordAccountEvent(account.id, 'deletion.scheduled', { at: account.subscription_expires_at });
 
  res.json({ token: issueToken(updated[0]), user: toUser(updated[0]) });
 }));
@@ -228,6 +223,7 @@ router.delete('/me/schedule-deletion', asyncHandler(async (req, res) => {
   'UPDATE atodo.accounts SET subscription_scheduled_deletion = false WHERE id = $1 RETURNING *',
   [account.id]
  );
+ if (account.subscription_scheduled_deletion) await recordAccountEvent(account.id, 'deletion.cancelled');
 
  res.json({ token: issueToken(updated[0]), user: toUser(updated[0]) });
 }));

@@ -224,98 +224,14 @@ paths:
               schema: { $ref: "#/components/schemas/Error" }
               example: { code: EXPIRED, message: "That verification link has expired. Please request the change again." }
 
-  /auth/undo-email-change:
-    post:
-      tags: [Auth]
-      summary: Undo a login-email change from the link sent to the OLD address
-      description: >-
-        `token` is the signed token (same HS256 format as a bearer token,
-        but with `purpose: email-change-undo` and no `sub`, so it can never
-        authenticate a request) embedded in the link `POST
-        /users/me/change-email` emails to the old address -- it carries the
-        account id, both addresses and when the change was requested, and
-        is valid for 30 days. Restores the old address as the login email
-        (whether or not the new one was already verified), cancels any
-        pending change, and -- since an unwanted change suggests someone
-        else knows the password -- ends every session and returns a
-        short-lived (1 hour), single-use `resetToken` for
-        `POST /auth/reset-password`, so the owner can set a new password
-        without knowing the current one. Only honored for the account's
-        most recent change request, and only once.
-      security: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [token]
-              properties:
-                token: { type: string }
-      responses:
-        "200":
-          description: Undone.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  email: { type: string, format: email, description: The restored login email. }
-                  resetToken: { type: string }
-        "400":
-          description: Invalid, expired, already used, or superseded by a newer change request.
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/Error" }
-              example: { code: INVALID_TOKEN, message: "That link is invalid, has expired, or has already been used." }
-        "409":
-          description: The old address belongs to another account by now, so it can't be restored.
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/Error" }
-              example: { code: EMAIL_TAKEN, message: "An account with that email already exists." }
-
-  /auth/forgot-password:
-    post:
-      tags: [Auth]
-      summary: Email a link to set a new password ("Forgot password?")
-      description: >-
-        If an account (open or closed) has this email, it's sent a link to
-        the client (`?resetPassword=<resetToken>`, see
-        `POST /auth/reset-password`) that sets a new password without the
-        current one. The link is valid for 30 minutes and works once: it's
-        bound to the account's password version, so setting a new password
-        voids it -- and any other unused link. Always answers 202, whether
-        or not the email has an account, so it can't be used to find out
-        which emails do.
-      security: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [email]
-              properties:
-                email: { type: string, format: email }
-      responses:
-        "202":
-          description: Accepted (sent, if the email has an account).
-        "400":
-          description: Not a valid email address.
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/Error" }
-              example: { code: INVALID_EMAIL, message: "Enter a valid email address." }
-
   /auth/reset-password:
     post:
       tags: [Auth]
       summary: Set a new password with a reset token
       description: >-
         `resetToken` comes from a "Forgot password?" link
-        (`POST /auth/forgot-password`) or from
-        `POST /auth/undo-email-change`. Single-use (it's bound to the
+        (`POST /auth/forgot-password`, or one support sent from the admin
+        app). Single-use (it's bound to the
         password version it was issued for). Ends every other session, like
         `POST /users/me/change-password`, and logs this one in. A closed
         (deleted) account is reopened, empty -- the response then has
@@ -600,10 +516,11 @@ paths:
         Requires the current password, like `change-password`. Doesn't
         change the login email yet: the NEW address gets a verification
         link (6 hours, see `POST /auth/verify-email-change`), and the OLD
-        address gets a notice with an undo link (30 days, see `POST
-        /auth/undo-email-change`). Until the new address is verified, the old
-        one keeps working for login; a newer request replaces a pending one
-        (and invalidates the older undo link).
+        address gets a notice -- with no link to undo the change (that
+        could be abused): if it wasn't them, they write to support, who can
+        set the email back from the admin app. Until the new address is
+        verified, the old one keeps working for login; a newer request
+        replaces a pending one.
       requestBody:
         required: true
         content:

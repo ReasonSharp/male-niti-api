@@ -877,6 +877,117 @@ paths:
         "400": { description: "`substantial` missing" }
         "404": { description: No such document }
         "409": { description: Nothing to publish, or a change not made in every language }
+  /maleniti/v1/admin/atodo/accounts:
+    get:
+      summary: List A-To-Do's users
+      description: >
+        Every account -- open, closed, and registrations not activated yet (`kind: registration`, `status: unverified`,
+        with when their activation link expires) -- for the admin app's "A-To-Do users" tab, a page at a time. `q`
+        searches email, nickname, a pending new email and the account id. `payments` counts paid sale receipts (not
+        stornos). `stripeDashboard` is the Stripe Dashboard's base URL for the API's key (test or live), or null.
+      operationId: listAtodoAccounts
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: q, in: query, schema: { type: string } }
+        - { name: status, in: query, schema: { type: string, enum: [active, closed, unverified] } }
+        - { name: plan, in: query, schema: { type: string, enum: [free, trial, pro] } }
+        - { name: subscription, in: query, schema: { type: string, enum: [active, cancelling, lapsed] }, description: "active: renewing; cancelling: cancelled but still running; lapsed: ended" }
+        - { name: paid, in: query, schema: { type: string, enum: ['1'] }, description: Only accounts that have paid }
+        - { name: deletion, in: query, schema: { type: string, enum: ['1'] }, description: Only accounts with a deletion scheduled }
+        - { name: sort, in: query, schema: { type: string, enum: [created, login, email], default: created } }
+        - { name: limit, in: query, schema: { type: integer, default: 50, maximum: 200 } }
+        - { name: offset, in: query, schema: { type: integer, default: 0 } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  total: { type: integer }
+                  accounts: { type: array, items: { $ref: '#/components/schemas/AtodoAccountSummary' } }
+                  stripeDashboard: { type: string, nullable: true }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+  /maleniti/v1/admin/atodo/accounts/{id}:
+    get:
+      summary: One A-To-Do account in full
+      description: >
+        Its profile and sign-in dates, password and email changes (a pending one too), subscription (plan, interval,
+        start, renewal or end, cancellation, scheduled deletion), whether it used its trial, its receipts, task
+        counts, its recorded events (atodo.account_events, newest first, at most 200) and links to its customer and
+        subscription in the Stripe Dashboard (null without a Stripe key or id).
+      operationId: getAtodoAccount
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200": { description: OK }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { description: No such account }
+  /maleniti/v1/admin/atodo/accounts/{id}/password-reset:
+    post:
+      summary: Email an account a password-reset link
+      description: The same link "Forgot password?" sends (30 minutes, once). Recorded on the account.
+      operationId: sendAtodoPasswordReset
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200": { description: Sent }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { description: No such account }
+  /maleniti/v1/admin/atodo/accounts/{id}/email:
+    post:
+      summary: Set an account's login email
+      description: >
+        At once, without verification -- for an owner support has verified another way (e.g. whose email was changed
+        without them: there's no undo link any more). Cancels a pending change. Both the old and the new address are
+        emailed about it; recorded on the account. Refused for a closed account, or an address another account (open
+        or closed) or a pending registration has.
+      operationId: setAtodoAccountEmail
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email: { type: string, format: email }
+      responses:
+        "200": { description: Changed }
+        "400": { description: Not a valid email, or the same one }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { description: No such account }
+        "409": { description: Closed, or the address is taken }
+  /maleniti/v1/admin/atodo/registrations/resend-activation:
+    post:
+      summary: Re-send a registration's activation email
+      description: A fresh link, valid 6 hours from now; any earlier one stops working.
+      operationId: resendAtodoActivation
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email: { type: string, format: email }
+      responses:
+        "200": { description: Sent }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { description: No registration waiting for activation with that email }
   /maleniti/v1/admin/translations/{trid}/{language_id}:
     parameters:
       - name: trid
@@ -1782,6 +1893,27 @@ components:
       description: One text per language (`maleniti.language`); Croatian required.
       additionalProperties: { type: string }
       example: { hr: Internetska prodaja, en: Online sales }
+    AtodoAccountSummary:
+      type: object
+      properties:
+        id: { type: string, description: The account's id, or a registration's email }
+        kind: { type: string, enum: [account, registration] }
+        email: { type: string }
+        nickname: { type: string }
+        status: { type: string, enum: [active, closed, unverified] }
+        created_at: { type: string, format: date-time }
+        last_login_at: { type: string, format: date-time, nullable: true }
+        last_active_at: { type: string, format: date-time, nullable: true }
+        closed_at: { type: string, format: date-time, nullable: true }
+        pending_email: { type: string, nullable: true }
+        subscription_plan: { type: string, nullable: true, enum: [trial, pro] }
+        subscription_billing_interval: { type: string, nullable: true }
+        subscription_expires_at: { type: string, format: date-time, nullable: true }
+        subscription_cancel_at_period_end: { type: boolean, nullable: true }
+        subscription_scheduled_deletion: { type: boolean, nullable: true }
+        trial_used: { type: boolean, nullable: true }
+        payments: { type: integer }
+        activation_expires_at: { type: string, format: date-time, nullable: true }
     MalenitiLegalText:
       type: object
       properties:

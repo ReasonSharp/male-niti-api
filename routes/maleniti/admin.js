@@ -62,6 +62,9 @@ router.delete('/languages/:id', adminHandler(async (req, res) => {
  res.status(204).send();
 }));
 
+// A-To-Do's user administration (routes/maleniti/atodoAccounts.js).
+router.use('/atodo', require('./atodoAccounts'));
+
 router.use('/languages', adminResource({
  table: 'maleniti.language',
  id: 'language_id',
