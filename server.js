@@ -64,6 +64,10 @@ app.post('/atodo/v1/stripe/webhook', express.raw({ type: 'application/json' }), 
 // 1 MB -- above express.json()'s 100 kB default, which everything else
 // keeps. (The TLS proxy's client_max_body_size for /atodo/v1/ allows more.)
 app.post('/atodo/v1/imports/:importId/chunks', express.json({ limit: '1mb' }));
+// One language's interface texts at once (the admin app's "Import
+// translations", routes/maleniti/admin.js): ~100 kB a language now. (The
+// nginx proxies in front of the admin app keep their default 1 MB.)
+app.post('/maleniti/v1/admin/translations/import', express.json({ limit: '2mb' }));
 app.use(express.json());
 app.use(authenticate);
 app.use(rateLimiter.general);

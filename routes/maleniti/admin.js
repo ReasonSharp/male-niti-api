@@ -531,6 +531,68 @@ router.put('/translations/:trid/:language', adminHandler(async (req, res) => {
  res.json(row);
 }));
 
+// One language's texts from the admin app's "Import translations" (a file
+// its "Export translations" made): { language: { language_id, name },
+// texts: { name: text } }. Every text in it is set; texts it doesn't have
+// are left as they are; names the brand has no text for are skipped and
+// reported (texts are added with the client code that uses them). A
+// language that doesn't exist yet is created, starting with no texts. (Up
+// to 2 MB -- see server.js.)
+const LANGUAGE_NAME_MAX = 100;
+
+router.post('/translations/import', adminHandler(async (req, res) => {
+ const body = req.body || {};
+ const brand = typeof body.brand === 'string' ? body.brand : 'atodo';
+ const language = body.language || {};
+ const languageId = typeof language.language_id === 'string' ? language.language_id.trim() : '';
+ const languageName = typeof language.name === 'string' ? language.name.trim() : '';
+ const texts = body.texts;
+ if (!LANGUAGE_RE.test(languageId)) throw new HttpError(400, 'language.language_id must be a two-letter code');
+ if (!texts || typeof texts !== 'object' || Array.isArray(texts)) throw new HttpError(400, 'texts must be an object of key -> text');
+ const entries = Object.entries(texts);
+ const notText = entries.filter(([, text]) => typeof text !== 'string').map(([name]) => name);
+ if (notText.length) throw new HttpError(400, `Not a text: ${notText.slice(0, 5).join(', ')}${notText.length > 5 ? '...' : ''}`);
+
+ const result = await inTransaction(async (client) => {
+  const { rows: [brandRow] } = await client.query('SELECT brand_id FROM maleniti.brand WHERE code = $1', [brand]);
+  if (!brandRow) throw new HttpError(404, `No brand ${brand}.`);
+  const { rows: [existing] } = await client.query('SELECT 1 FROM maleniti.language WHERE language_id = $1', [languageId]);
+  if (!existing) {
+   if (!languageName || languageName.length > LANGUAGE_NAME_MAX) throw new HttpError(400, `${languageId} is a new language: language.name is required`);
+   await client.query('INSERT INTO maleniti.language (language_id, name) VALUES ($1, $2)', [languageId, languageName]);
+  }
+  const { rows: keys } = await client.query(
+   `SELECT k.trid, k.name, t.text FROM maleniti.translation_key k
+    LEFT JOIN maleniti.translation t ON t.trid = k.trid AND t.language_id = $2
+    WHERE k.brand_id = $1 AND k.name IS NOT NULL`,
+   [brandRow.brand_id, languageId]
+  );
+  const byName = new Map(keys.map((k) => [k.name, k]));
+  const unknown = [];
+  let updated = 0;
+  let unchanged = 0;
+  for (const [name, text] of entries) {
+   const key = byName.get(name);
+   if (!key) {
+    unknown.push(name);
+    continue;
+   }
+   if (key.text === text) {
+    unchanged++;
+    continue;
+   }
+   await client.query(
+    `INSERT INTO maleniti.translation (trid, language_id, text) VALUES ($1, $2, $3)
+     ON CONFLICT (trid, language_id) DO UPDATE SET text = EXCLUDED.text`,
+    [key.trid, languageId, text]
+   );
+   updated++;
+  }
+  return { language_id: languageId, created_language: !existing, updated, unchanged, unknown };
+ });
+ res.json(result);
+}));
+
 router.delete('/translations/:trid/:language', adminHandler(async (req, res) => {
  const trid = Number(req.params.trid);
  if (!Number.isInteger(trid)) throw new HttpError(400, 'trid must be a whole number');

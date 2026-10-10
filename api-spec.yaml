@@ -679,6 +679,49 @@ paths:
         "401": { $ref: '#/components/responses/Unauthorized' }
         "403": { $ref: '#/components/responses/Forbidden' }
         "404": { description: No such brand }
+  /maleniti/v1/admin/translations/import:
+    post:
+      summary: Import one language's interface texts
+      description: >
+        The admin app's "Import translations", reading a file its "Export translations" made. Every text in `texts` is
+        set; the brand's texts the file doesn't have are left as they are; keys the brand has no text for are skipped
+        and listed in `unknown` (texts are added with the client code that uses them). A language that doesn't exist
+        yet is created (`language.name` required then), with no other texts. One transaction; up to 2 MB.
+      operationId: importMalenitiTranslations
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [language, texts]
+              properties:
+                brand: { type: string, default: atodo }
+                language:
+                  type: object
+                  required: [language_id]
+                  properties:
+                    language_id: { type: string, example: hr }
+                    name: { type: string, example: hrvatski }
+                texts: { type: object, additionalProperties: { type: string }, example: { todo.addTask: + Dodaj zadatak } }
+      responses:
+        "200":
+          description: Imported
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  language_id: { type: string }
+                  created_language: { type: boolean }
+                  updated: { type: integer, description: Texts set (changed or new) }
+                  unchanged: { type: integer }
+                  unknown: { type: array, items: { type: string }, description: Keys skipped }
+        "400": { description: An invalid field (plain-text message) }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { description: No such brand }
   /maleniti/v1/admin/translations/{trid}/{language_id}:
     parameters:
       - name: trid
