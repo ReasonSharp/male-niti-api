@@ -266,4 +266,37 @@ const throwsCode = (fn, code, message) => assert.throws(fn, (err) => err.code ==
  assert.deepStrictEqual(state.sessionMoves, [{ from: successor.id, to: reopened.id }], 'the successor\'s sessions move to the reopened occurrence');
 }
 
+// --- Becoming recur-until-completed carries the latest undone occurrence ----------
+
+{
+ const firstFriday = { type: 'months', dayMode: 'weekday', ordinal: 1, weekday: 5, interval: 1 };
+ const toRuc = (state, dueDate = '2026-09-04') => state.applyPatternChange('confess', { dueDate, frequency: firstFriday, endDate: null, recurUntilCompleted: true });
+ const make = (occurrences = []) => {
+  const t = task({ id: 'confess', dueDate: '2026-09-04', dueTime: '11:00', frequency: firstFriday });
+  return { t, state: makeState({ tasks: [t], occurrences, at: '2026-10-06T17:00' }) };
+ };
+
+ let { t, state } = make();
+ toRuc(state);
+ assert.strictEqual(t.dueDate, '2026-10-02', 'the missed 2 October occurrence is the one to carry');
+ const live = state.findOccurrence(t, null);
+ assert.strictEqual(live.occurrenceDate, '2026-10-02', 'it is the live occurrence');
+ assert.deepStrictEqual(live.pendingReschedules, ['2026-10-03', '2026-10-04', '2026-10-05', '2026-10-06'], 'carried to today');
+ assert.ok(!state.occurrences.some((o) => o.occurrenceDate === '2026-11-06'), 'no jump to the next first Friday');
+ assert.deepStrictEqual(itemsOn(state, 'next-recurrence', '2026-10-06'), ['confess@2026-10-06'], 'it shows today, still to do');
+
+ const done = { id: 'o1', taskId: 'confess', occurrenceDate: '2026-10-02', status: 'completed', resolvedAt: 1, dismissed: false, manual: false, pendingReschedules: [], comments: [], log: [] };
+ ({ t, state } = make([done]));
+ toRuc(state);
+ assert.strictEqual(t.dueDate, '2026-11-06', 'the latest one done: the chain starts at the next date');
+
+ ({ t, state } = make([{ ...done, status: 'pending', resolvedAt: null, dismissed: true }]));
+ toRuc(state);
+ assert.strictEqual(t.dueDate, '2026-11-06', 'the latest one dismissed: not revived');
+
+ ({ t, state } = make());
+ toRuc(state, '2026-12-01');
+ assert.strictEqual(t.dueDate, '2026-12-04', 'a future start date is kept, nothing carried');
+}
+
 console.log('account.test.js: all assertions passed');
