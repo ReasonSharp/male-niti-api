@@ -1103,25 +1103,47 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
     patch:
       tags: [Tasks]
-      summary: Edit the task's details (the editor's Details tab)
+      summary: Edit the task (the editor's Save -- its Details tab, and the Recurrence tab with `pattern`)
       description: >-
         Name, description, details, time, time zone and flags -- for every
         occurrence, past and future. Send every field (the tab's whole
         state); nothing changes (and nothing is logged) when none differs.
-        A `recurUntilCompleted` task can't be made passive (400
-        `VALIDATION_ERROR`) -- turn that off first (`PUT .../pattern`).
+        With `pattern` (and `resolution`), the pattern too, exactly as `PUT
+        .../pattern` takes it -- including its 409
+        `PATTERN_CHANGE_NEEDS_CHOICE` -- in the same request: one action, so
+        one activity-log entry ("Edited"). Refused, nothing of the edit is
+        saved. A `recurUntilCompleted` task can't be made passive (400
+        `VALIDATION_ERROR`) -- turn that off in the same edit, or first.
       parameters:
         - { $ref: "#/components/parameters/XTimezone" }
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: "#/components/schemas/TaskDetailsInput" }
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/TaskDetailsInput"
+                - type: object
+                  properties:
+                    pattern: { $ref: "#/components/schemas/PatternInput" }
+                    resolution:
+                      type: object
+                      nullable: true
+                      description: As for `PUT .../pattern`.
+                      properties:
+                        mode: { type: string, enum: [recalculate, from] }
+                        date: { type: string, format: date }
       responses:
         "200": { $ref: "#/components/responses/Action" }
         "400": { $ref: "#/components/responses/Invalid" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "402": { $ref: "#/components/responses/PlanLimit" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: PATTERN_CHANGE_NEEDS_CHOICE -- see `PUT .../pattern`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
     delete:
       tags: [Tasks]
       summary: Delete the task and all its occurrences
@@ -2551,8 +2573,15 @@ components:
         message:
           type: string
           description: >-
-            What happened, in English as the server writes it ("Marked
-            done", "Rescheduled to 2026-10-12") -- the log's own record.
+            What the user did, in English as the server writes it ("Marked
+            done", "Rescheduled to 2026-10-12") -- the log's own record. One
+            entry per user action, only what they did: not the focus a timer
+            starts or a completion ends, or the server's own sweeping. Two
+            of the app's own doings get one too: "Unfocused by another task"
+            (the focus moved to another occurrence) and "Timer expired" (a
+            timer stopped by itself -- not one counting past zero). (Older
+            entries may still read "Unfocused and marked done" or "Timer
+            elapsed".)
         key:
           type: string
           nullable: true

@@ -14,6 +14,10 @@ assert.deepStrictEqual(
  { key: 'log.recurrenceEditedThisOnly', params: {} },
  'an older client wording, parentheses taken literally',
 );
+assert.deepStrictEqual(describeLogMessage('Timer paused'), { key: 'log.timerPaused', params: {} }, 'pausing a timer');
+assert.deepStrictEqual(describeLogMessage('Timer resumed'), { key: 'log.timerResumed', params: {} }, 'resuming one');
+assert.deepStrictEqual(describeLogMessage('Timer expired'), { key: 'log.timerExpired', params: {} }, 'a timer stopping by itself');
+assert.deepStrictEqual(describeLogMessage('Unfocused by another task'), { key: 'log.unfocusedByAnotherTask', params: {} }, 'losing the focus to another');
 assert.strictEqual(describeLogMessage('Something nobody wrote'), null, 'unrecognised');
 assert.strictEqual(describeLogMessage('Marked done!'), null, 'whole message only');
 assert.strictEqual(describeLogMessage(undefined), null, 'no message');

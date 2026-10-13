@@ -166,10 +166,68 @@ const needsChoice = (fn, message) => {
  state.complete('daily', '2026-10-05');
  assert.strictEqual(state.active.taskId, null, 'completing unfocuses');
  const last = state.findOccurrence(daily, '2026-10-05').log.slice(-1)[0].message;
- assert.strictEqual(last, 'Unfocused and marked done', 'one combined log entry');
+ assert.strictEqual(last, 'Marked done', 'what the user did: marked it done (the unfocus follows from it)');
  throwsCode(() => state.focus('daily', '2026-10-05'), 'NOT_FOCUSABLE', 'a done occurrence can\'t be focused');
  state.reopen('daily', '2026-10-05');
- assert.strictEqual(state.findOccurrence(daily, '2026-10-05').log.slice(-1)[0].message, 'Unfocused', 'reopening straight back takes the entry back');
+ assert.notStrictEqual(state.findOccurrence(daily, '2026-10-05').log.slice(-1)[0].message, 'Marked done', 'reopening straight back takes the entry back');
+}
+
+// --- The activity log: one entry per user action, only what the user did -------
+
+{
+ const a = task({ id: 'a', dueDate: '2026-10-05' });
+ const b = task({ id: 'b', dueDate: '2026-10-05' });
+ const state = makeState({ tasks: [a, b], at: '2026-10-05T09:00' });
+ const logOf = (t) => (state.findOccurrence(t, '2026-10-05') || { log: [] }).log.map((e) => e.message);
+
+ state.focus('a', '2026-10-05');
+ assert.deepStrictEqual(logOf(a), ['Focused'], 'focusing: "Focused"');
+ advance(state, '2026-10-05T09:01');
+ state.startTimer('b', '2026-10-05', { minutes: 25, start: true });
+ assert.deepStrictEqual(logOf(b), ['Timer set'], 'setting a timer: only "Timer set" (not "Focused" too)');
+ assert.deepStrictEqual(logOf(a), ['Focused', 'Unfocused by another task'], 'the one it took the focus from is told');
+ advance(state, '2026-10-05T09:05');
+ state.unfocus();
+ assert.deepStrictEqual(logOf(b), ['Timer set', 'Timer paused'], 'pausing the timer: "Timer paused"');
+ advance(state, '2026-10-05T09:20');
+ state.focus('b', '2026-10-05');
+ assert.deepStrictEqual(logOf(b), ['Timer set', 'Timer paused', 'Timer resumed'], 'resuming it: "Timer resumed"');
+ advance(state, '2026-10-05T09:22');
+ state.complete('b', '2026-10-05');
+ assert.deepStrictEqual(logOf(b), ['Timer set', 'Timer paused', 'Timer resumed', 'Marked done'], 'marking it done while timed: only "Marked done"');
+
+ state.startTimer('a', '2026-10-05', { minutes: 1, start: true });
+ advance(state, '2026-10-05T09:30');
+ state.runMaintenance();
+ assert.strictEqual(state.findOccurrence(a, '2026-10-05').timer, null, 'the timer ran out');
+ assert.deepStrictEqual(logOf(a), ['Focused', 'Unfocused by another task', 'Timer set', 'Timer expired'], 'a timer stopping by itself: "Timer expired"');
+ assert.strictEqual(state.findOccurrence(a, '2026-10-05').log.slice(-1)[0].timestamp, require('./helpers').zagreb('2026-10-05T09:23'), 'at the moment it ran out (its minute from 09:22)');
+
+ state.focus('a', '2026-10-05');
+ advance(state, '2026-10-05T09:30:05');
+ state.unfocus();
+ assert.deepStrictEqual(logOf(a), ['Focused', 'Unfocused by another task', 'Timer set', 'Timer expired'], 'a focus toggled straight back (a misclick): neither entry stays');
+
+ const c = task({ id: 'c', dueDate: '2026-10-05' });
+ state.tasks.push(c);
+ state.startTimer('c', '2026-10-05', { minutes: 1, continuePastZero: true, start: true });
+ advance(state, '2026-10-05T09:40');
+ state.runMaintenance();
+ assert.ok(state.findOccurrence(c, '2026-10-05').timer, 'a countdown that continues past zero keeps counting');
+ assert.deepStrictEqual(logOf(c), ['Timer set'], '...and writes nothing yet');
+}
+
+{
+ // The editor's Save changing both the details and the pattern: one entry.
+ const t = task({ id: 'ed', dueDate: '2026-10-05', name: 'Before' });
+ const state = makeState({ tasks: [t], at: '2026-10-05T09:00' });
+ const details = { name: 'After', description: '', details: '', dueTime: '18:00', allDay: false, appointment: false, passive: false, timeZone: null };
+ state.editTask('ed', details, { dueDate: '2026-10-05', frequency: { type: 'days', interval: 1 }, endDate: '2026-12-31', recurUntilCompleted: false });
+ assert.deepStrictEqual(t.log.map((e) => e.message), ['Edited'], 'details and pattern in one Save: one "Edited"');
+ assert.strictEqual(t.name, 'After', 'the details saved');
+ assert.strictEqual(t.endDate, '2026-12-31', 'and the pattern');
+ state.editTask('ed', details, { dueDate: '2026-10-05', frequency: { type: 'days', interval: 1 }, endDate: '2026-12-31', recurUntilCompleted: false });
+ assert.strictEqual(t.log.length, 1, 'nothing changed: nothing logged');
 }
 
 // --- Notes, limits, locked tasks ------------------------------------------------

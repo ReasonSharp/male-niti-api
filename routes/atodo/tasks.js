@@ -77,8 +77,12 @@ router.post('/', action((req, state) => {
 }, { status: 201, full: () => [] }));
 
 // The Details tab: name, description, details, time, zone, flags.
+// With `pattern` (and its `resolution`, see PUT .../pattern) too: the
+// editor's Save, both tabs at once -- one action, one log entry.
 router.patch('/:taskId', action((req, state) => {
- state.editDetails(req.params.taskId, v.taskDetails(body(req)));
+ const b = body(req);
+ const pattern = b.pattern == null ? null : v.pattern(b.pattern);
+ state.editTask(req.params.taskId, v.taskDetails(b), pattern, v.patternResolution(b.resolution));
 }));
 
 // The Recurrence tab: the pattern. One that would change the task's past
