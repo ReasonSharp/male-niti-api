@@ -81,9 +81,12 @@ router.patch('/:taskId', action((req, state) => {
  state.editDetails(req.params.taskId, v.taskDetails(body(req)));
 }));
 
-// The Recurrence tab: the pattern, from today on.
+// The Recurrence tab: the pattern. One that would change the task's past
+// is refused (409 PATTERN_CHANGE_NEEDS_CHOICE) until it comes with the
+// user's `resolution` -- see AccountState.applyPatternChange.
 router.put('/:taskId/pattern', action((req, state) => {
- state.applyPatternChange(req.params.taskId, v.pattern(body(req)));
+ const b = body(req);
+ state.applyPatternChange(req.params.taskId, v.pattern(b), v.patternResolution(b.resolution));
 }));
 
 router.delete('/:taskId', action((req, state) => {

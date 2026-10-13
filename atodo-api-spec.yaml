@@ -1176,32 +1176,69 @@ paths:
       - { $ref: "#/components/parameters/TaskId" }
     put:
       tags: [Tasks]
-      summary: Change the recurrence pattern (the editor's Recurrence tab), from today on
+      summary: Change the recurrence pattern (the editor's Recurrence tab)
       description: >-
-        Everything before today stays as it was: a plain task's dates the
-        old pattern produced before today are saved as occurrences, and the
-        new pattern starts today. A one-off just moves (with what's recorded
-        on it). A task staying `recurUntilCompleted` keeps its live
-        occurrence (unless that's still the blank next cycle, which is
-        recomputed). Ends a plain task's pause. Turning a one-off into a
-        recurring task or back counts against the free plan's limits like
-        creating one (402 `TASK_LIMIT`). A passive task can't be made to
-        recur until completed (400 `VALIDATION_ERROR`) -- turn passive off
-        first (`PATCH /tasks/{taskId}`). Nothing changes when the pattern is
-        the same.
+        The due date is the user's: it's saved as sent and never moved by
+        the server (a `recurUntilCompleted` task's live occurrence carries
+        its own date). A change that would alter the task's past -- which
+        dates before today count as its occurrences (recorded ones always
+        do; besides them a plain pattern's dates, while a
+        `recurUntilCompleted` task's past is its records) -- needs the
+        user's `resolution`; without one it's refused, 409
+        `PATTERN_CHANGE_NEEDS_CHOICE`, with `details` (`today`, and
+        `recordedDates`: the past occurrences with something recorded on
+        them -- done or failed, notes, details, measured time, a timer,
+        activity) for the client to ask: `{ mode: recalculate }` deletes
+        every past occurrence and lets the past follow the new pattern;
+        `{ mode: from, date }` (no later than today) keeps the old pattern's
+        dates before `date` (saved as occurrences), starts the new pattern
+        on it, and deletes the past occurrences from it on. A change that
+        leaves the past as it is applies at once -- e.g. turning a plain
+        task into `recurUntilCompleted` whose past occurrences are all
+        recorded, or whose only unrecorded one is the latest (that one is
+        then carried as the live occurrence; else the chain starts at the
+        pattern's next date). A one-off just moves (with what's recorded on
+        it). A task staying `recurUntilCompleted` keeps its live occurrence
+        (unless that's still the blank next cycle, which is recomputed).
+        Ends a plain task's pause. Turning a one-off into a recurring task
+        or back counts against the free plan's limits like creating one
+        (402 `TASK_LIMIT`). A passive task can't be made to recur until
+        completed (400 `VALIDATION_ERROR`) -- turn passive off first (`PATCH
+        /tasks/{taskId}`). Nothing changes when the pattern is the same.
       parameters:
         - { $ref: "#/components/parameters/XTimezone" }
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: "#/components/schemas/PatternInput" }
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/PatternInput"
+                - type: object
+                  properties:
+                    resolution:
+                      type: object
+                      nullable: true
+                      description: How to apply a change that alters the past (see above).
+                      required: [mode]
+                      properties:
+                        mode: { type: string, enum: [recalculate, from] }
+                        date: { type: string, format: date, description: "`from` only: no later than today." }
       responses:
         "200": { $ref: "#/components/responses/Action" }
         "400": { $ref: "#/components/responses/Invalid" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "402": { $ref: "#/components/responses/PlanLimit" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: PATTERN_CHANGE_NEEDS_CHOICE -- the change would alter the past; send it again with a `resolution`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              example:
+                code: PATTERN_CHANGE_NEEDS_CHOICE
+                message: "This change would alter the task's past occurrences: recalculate them from the new pattern, or apply it from a date."
+                details: { today: "2026-10-11", recordedDates: ["2026-10-05", "2026-10-08"] }
 
   /tasks/{taskId}/due-time:
     parameters:
@@ -2291,6 +2328,9 @@ components:
         message:
           type: string
           description: Human-readable fallback; a finished client should show its own translated copy per `code` instead.
+        details:
+          type: object
+          description: What the client needs to act on the refusal, for the codes that have any (e.g. PATTERN_CHANGE_NEEDS_CHOICE).
 
     Token:
       type: string

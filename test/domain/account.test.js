@@ -9,13 +9,29 @@ const itemsOn = (state, view, date) => {
 };
 const throwsCode = (fn, code, message) => assert.throws(fn, (err) => err.code === code, message);
 
-// --- A pattern change keeps the past --------------------------------------------
+// --- A pattern change that alters the past is the user's to resolve ---------------
+
+const everyOtherDay = { dueDate: '2026-10-01', frequency: { type: 'days', interval: 2 }, endDate: null, recurUntilCompleted: false };
+const needsChoice = (fn, message) => {
+ let details = null;
+ assert.throws(fn, (err) => {
+  details = err.details;
+  return err.code === 'PATTERN_CHANGE_NEEDS_CHOICE';
+ }, message);
+ return details;
+};
 
 {
  const daily = task({ id: 'daily', dueDate: '2026-10-01' });
  const state = makeState({ tasks: [daily], at: '2026-10-05T09:00' });
  state.complete('daily', '2026-10-02');
- state.applyPatternChange('daily', { dueDate: '2026-10-01', frequency: { type: 'days', interval: 2 }, endDate: null, recurUntilCompleted: false });
+ const details = needsChoice(() => state.applyPatternChange('daily', everyOtherDay), 'every day -> every other day changes the past: refused');
+ assert.strictEqual(details.today, '2026-10-05', 'with today');
+ assert.ok(details.recordedDates.includes('2026-10-02'), 'and the past occurrences with something recorded');
+ assert.strictEqual(daily.frequency.interval, 1, 'nothing changed');
+ assert.strictEqual(state.findOccurrence(daily, '2026-10-03'), null, 'nothing saved');
+
+ state.applyPatternChange('daily', everyOtherDay, { mode: 'from', date: '2026-10-05' });
  // Every date the old pattern produced before today is now a row.
  for (const d of ['2026-10-01', '2026-10-02', '2026-10-03', '2026-10-04']) assert.ok(state.findOccurrence(daily, d), `${d} kept as a row`);
  assert.strictEqual(daily.frequency.startsOn, '2026-10-05', 'new pattern bounded to today on');
@@ -23,6 +39,43 @@ const throwsCode = (fn, code, message) => assert.throws(fn, (err) => err.code ==
  assert.deepStrictEqual(itemsOn(state, 'all', '2026-10-07'), ['daily@2026-10-07'], '...the 7th');
  assert.deepStrictEqual(itemsOn(state, 'all', '2026-10-02'), ['daily@2026-10-02+done'], 'the past stays as it was');
  assert.strictEqual(daily.log[daily.log.length - 1].message, 'Recurrence pattern edited', 'logged');
+}
+
+{
+ // Recalculating: the past follows the new pattern; every past occurrence goes.
+ const daily = task({ id: 'daily', dueDate: '2026-10-01' });
+ const state = makeState({ tasks: [daily], at: '2026-10-05T09:00' });
+ state.complete('daily', '2026-10-02');
+ state.addOccurrenceNote('daily', '2026-10-03', 'a note');
+ state.applyPatternChange('daily', everyOtherDay, { mode: 'recalculate' });
+ assert.ok(!state.occurrences.some((o) => o.occurrenceDate < '2026-10-05'), 'every past occurrence deleted');
+ assert.strictEqual(daily.dueDate, '2026-10-01', 'the due date is the user\'s');
+ assert.ok(!daily.frequency.startsOn, 'the new pattern from its due date');
+ assert.deepStrictEqual(itemsOn(state, 'all', '2026-10-03'), ['daily@2026-10-03+overdue'], 'the past follows it: the 3rd (not done)');
+ assert.deepStrictEqual(itemsOn(state, 'all', '2026-10-02'), [], '...not the 2nd');
+}
+
+{
+ // From a date in the past: earlier dates keep the old pattern; occurrences from it on go.
+ const daily = task({ id: 'daily', dueDate: '2026-10-01' });
+ const state = makeState({ tasks: [daily], at: '2026-10-08T09:00' });
+ state.complete('daily', '2026-10-02');
+ state.complete('daily', '2026-10-06');
+ state.applyPatternChange('daily', everyOtherDay, { mode: 'from', date: '2026-10-04' });
+ assert.ok(state.findOccurrence(daily, '2026-10-02').status === 'completed', 'before it: kept');
+ assert.ok(state.findOccurrence(daily, '2026-10-03'), 'the old pattern\'s dates before it, kept');
+ assert.strictEqual(state.findOccurrence(daily, '2026-10-06'), null, 'from it on: deleted, done or not');
+ assert.strictEqual(daily.frequency.startsOn, '2026-10-04', 'the new pattern starts on it');
+ assert.strictEqual(daily.dueDate, '2026-10-01', 'the due date is the user\'s');
+ assert.throws(() => state.applyPatternChange('daily', { ...everyOtherDay, frequency: { type: 'days', interval: 3 } }, { mode: 'from', date: '2026-10-20' }), (err) => err.code === 'VALIDATION_ERROR', 'a date after today is refused');
+}
+
+{
+ // A change that leaves the past alone applies at once.
+ const daily = task({ id: 'daily', dueDate: '2026-10-01' });
+ const state = makeState({ tasks: [daily], at: '2026-10-05T09:00' });
+ state.applyPatternChange('daily', { dueDate: '2026-10-01', frequency: { type: 'days', interval: 1 }, endDate: '2026-12-31', recurUntilCompleted: false });
+ assert.strictEqual(daily.endDate, '2026-12-31', 'an end date in the future: applied');
 }
 
 // --- Moving a one-off moves its row ---------------------------------------------
@@ -266,37 +319,65 @@ const throwsCode = (fn, code, message) => assert.throws(fn, (err) => err.code ==
  assert.deepStrictEqual(state.sessionMoves, [{ from: successor.id, to: reopened.id }], 'the successor\'s sessions move to the reopened occurrence');
 }
 
-// --- Becoming recur-until-completed carries the latest undone occurrence ----------
+// --- Becoming recur-until-completed: the due date stays, the chain starts right --
 
 {
  const firstFriday = { type: 'months', dayMode: 'weekday', ordinal: 1, weekday: 5, interval: 1 };
- const toRuc = (state, dueDate = '2026-09-04') => state.applyPatternChange('confess', { dueDate, frequency: firstFriday, endDate: null, recurUntilCompleted: true });
- const make = (occurrences = []) => {
+ const toRuc = (state, dueDate = '2026-09-04', resolution) => state.applyPatternChange('confess', { dueDate, frequency: firstFriday, endDate: null, recurUntilCompleted: true }, resolution);
+ const row = (date, fields = {}) => ({ id: `o${date}`, taskId: 'confess', occurrenceDate: date, status: 'completed', resolvedAt: 1, dismissed: false, manual: false, pendingReschedules: [], comments: [], log: [], ...fields });
+ const make = (occurrences) => {
   const t = task({ id: 'confess', dueDate: '2026-09-04', dueTime: '11:00', frequency: firstFriday });
   return { t, state: makeState({ tasks: [t], occurrences, at: '2026-10-06T17:00' }) };
  };
 
- let { t, state } = make();
+ let { t, state } = make([row('2026-09-04')]);
  toRuc(state);
- assert.strictEqual(t.dueDate, '2026-10-02', 'the missed 2 October occurrence is the one to carry');
+ assert.strictEqual(t.dueDate, '2026-09-04', 'the due date is never moved');
  const live = state.findOccurrence(t, null);
- assert.strictEqual(live.occurrenceDate, '2026-10-02', 'it is the live occurrence');
- assert.deepStrictEqual(live.pendingReschedules, ['2026-10-03', '2026-10-04', '2026-10-05', '2026-10-06'], 'carried to today');
+ assert.strictEqual(live.occurrenceDate, '2026-10-02', 'the missed 2 October occurrence is carried');
+ assert.deepStrictEqual(live.pendingReschedules, ['2026-10-03', '2026-10-04', '2026-10-05', '2026-10-06'], 'to today');
  assert.ok(!state.occurrences.some((o) => o.occurrenceDate === '2026-11-06'), 'no jump to the next first Friday');
  assert.deepStrictEqual(itemsOn(state, 'next-recurrence', '2026-10-06'), ['confess@2026-10-06'], 'it shows today, still to do');
 
- const done = { id: 'o1', taskId: 'confess', occurrenceDate: '2026-10-02', status: 'completed', resolvedAt: 1, dismissed: false, manual: false, pendingReschedules: [], comments: [], log: [] };
- ({ t, state } = make([done]));
+ ({ t, state } = make([row('2026-09-04'), row('2026-10-02')]));
  toRuc(state);
- assert.strictEqual(t.dueDate, '2026-11-06', 'the latest one done: the chain starts at the next date');
+ assert.strictEqual(t.dueDate, '2026-09-04', 'the latest one done: the due date stays');
+ assert.strictEqual(state.findOccurrence(t, null).occurrenceDate, '2026-11-06', 'and the chain starts at the next date');
 
- ({ t, state } = make([{ ...done, status: 'pending', resolvedAt: null, dismissed: true }]));
+ ({ t, state } = make([row('2026-09-04'), row('2026-10-02', { status: 'pending', resolvedAt: null, dismissed: true })]));
  toRuc(state);
- assert.strictEqual(t.dueDate, '2026-11-06', 'the latest one dismissed: not revived');
+ assert.strictEqual(state.findOccurrence(t, null).occurrenceDate, '2026-11-06', 'the latest one dismissed: not revived');
 
- ({ t, state } = make());
- toRuc(state, '2026-12-01');
- assert.strictEqual(t.dueDate, '2026-12-04', 'a future start date is kept, nothing carried');
+ ({ t, state } = make([]));
+ needsChoice(() => toRuc(state), 'two missed dates: only one can be carried, so the past would change -- refused');
+ toRuc(state, '2026-09-04', { mode: 'recalculate' });
+ assert.strictEqual(state.findOccurrence(t, null).occurrenceDate, '2026-09-04', 'recalculated: the chain from the first date on or after the due date');
+
+ ({ t, state } = make([row('2026-09-04')]));
+ needsChoice(() => toRuc(state, '2026-12-01'), 'starting in December would drop the missed 2 October from the past -- refused');
+ toRuc(state, '2026-12-01', { mode: 'from', date: '2026-10-06' });
+ assert.strictEqual(t.dueDate, '2026-12-01', 'the due date as the user set it');
+ assert.strictEqual(state.findOccurrence(t, null).occurrenceDate, '2026-12-04', 'the chain from the first date on or after it');
+ assert.ok(state.findOccurrence(t, '2026-10-02'), 'the old pattern\'s 2 October kept');
+}
+
+{
+ // The reported case: due 1 October, "1 day before the first Friday", done.
+ const dayBeforeFirstFriday = { type: 'months', dayMode: 'multi-weekday-offset', ordinal: 1, interval: 1, weekdays: [5], offsetDays: 1, offsetDirection: 'before' };
+ const t = task({ id: 'prep', dueDate: '2026-10-01', frequency: dayBeforeFirstFriday });
+ const state = makeState({ tasks: [t], at: '2026-10-11T12:00' });
+ state.complete('prep', '2026-10-01');
+ state.applyPatternChange('prep', { dueDate: '2026-10-01', frequency: dayBeforeFirstFriday, endDate: null, recurUntilCompleted: true });
+ assert.strictEqual(t.dueDate, '2026-10-01', 'the due date stays 1 October');
+ assert.strictEqual(state.findOccurrence(t, null).occurrenceDate, '2026-11-05', 'the next cycle is the live occurrence');
+}
+
+{
+ // Created as recur-until-completed off its pattern: the due date as entered.
+ const state = makeState({ at: '2026-10-05T09:00' });
+ const created = state.createTask({ name: 'x', dueDate: '2026-10-05', dueTime: null, allDay: true, recurUntilCompleted: true, frequency: { type: 'months', dayMode: 'weekday', ordinal: 1, weekday: 5, interval: 1 }, endDate: null });
+ assert.strictEqual(created.dueDate, '2026-10-05', 'the due date as entered');
+ assert.strictEqual(state.findOccurrence(created, null).occurrenceDate, '2026-11-06', 'the first occurrence on the first pattern date from it');
 }
 
 console.log('account.test.js: all assertions passed');
