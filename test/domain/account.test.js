@@ -230,6 +230,52 @@ const needsChoice = (fn, message) => {
  assert.strictEqual(t.log.length, 1, 'nothing changed: nothing logged');
 }
 
+// --- Tomorrow's tasks today: future occurrences can be worked on and done ---------
+
+{
+ const daily = task({ id: 'daily', dueDate: '2026-10-01' });
+ const state = makeState({ tasks: [daily], at: '2026-10-05T09:00' });
+ const tomorrow = () => dayView(state, 'all', '2026-10-06').items[0];
+ for (const action of ['timer', 'focus', 'complete']) assert.ok(tomorrow().actions.includes(action), `tomorrow's occurrence offers ${action}`);
+ state.focus('daily', '2026-10-06');
+ assert.strictEqual(state.active.occurrenceDate, '2026-10-06', 'it can be focused');
+ state.runMaintenance();
+ assert.strictEqual(state.active.occurrenceDate, '2026-10-06', '...and stays focused (upkeep no longer drops a future one)');
+ state.startTimer('daily', '2026-10-06', { minutes: 20, start: true });
+ assert.ok(state.findOccurrence(daily, '2026-10-06').timer, 'it can be timed');
+ advance(state, '2026-10-05T09:10');
+ state.complete('daily', '2026-10-06');
+ assert.strictEqual(state.findOccurrence(daily, '2026-10-06').status, 'completed', 'it can be marked done');
+ assert.ok(state.findOccurrence(daily, '2026-10-06').timerSeconds >= 600, 'its timed time credited');
+ const today = state.findOccurrence(daily, '2026-10-05');
+ assert.ok(!today || (!today.dismissed && today.status === 'pending'), "today's own occurrence is left be -- not swept off as an earlier one");
+ assert.deepStrictEqual(itemsOn(state, 'all', '2026-10-05'), ['daily@2026-10-05'], 'today still shows, to do');
+ assert.deepStrictEqual(itemsOn(state, 'all', '2026-10-06'), ['daily@2026-10-06+done'], 'tomorrow shows done');
+ const { stats } = require('../../lib/atodo/domain/reports');
+ const taskStats = stats(state, { kind: 'task', taskId: 'daily' });
+ assert.ok(taskStats.completionRate <= 100, 'the completion rate counts the early one as an occurrence to date');
+ state.reopen('daily', '2026-10-06');
+ assert.strictEqual(state.findOccurrence(daily, '2026-10-06').status, 'pending', 'and taken back');
+}
+
+{
+ // A recur-until-completed task's next cycle, done ahead of its date.
+ const weekly = task({ id: 'weekly', dueDate: '2026-10-05', recurUntilCompleted: true, frequency: { type: 'weeks', interval: 1 } });
+ const state = makeState({ tasks: [weekly], occurrences: [{ id: 'w1', taskId: 'weekly', occurrenceDate: '2026-10-05', status: 'completed', resolvedAt: 1, dismissed: false, manual: false, pendingReschedules: [], comments: [], log: [] }, { id: 'w2', taskId: 'weekly', occurrenceDate: '2026-10-12', status: 'pending', resolvedAt: null, dismissed: false, manual: false, pendingReschedules: [], comments: [], log: [] }], at: '2026-10-05T12:00' });
+ assert.ok(dayView(state, 'all', '2026-10-12').items[0].actions.includes('complete'), 'next week\'s cycle offers complete');
+ state.complete('weekly', '2026-10-12');
+ assert.strictEqual(state.findOccurrence(weekly, '2026-10-12').status, 'completed', 'done early');
+ assert.strictEqual(state.findOccurrence(weekly, null).occurrenceDate, '2026-10-19', 'the cycle after it is next');
+}
+
+{
+ // A passive reminder for tomorrow can be marked failed already.
+ const reminder = task({ id: 'rem', dueDate: '2026-10-06', passive: true, frequency: { type: 'once', interval: 1 } });
+ const state = makeState({ tasks: [reminder], at: '2026-10-05T12:00' });
+ state.fail('rem', '2026-10-06');
+ assert.strictEqual(state.findOccurrence(reminder, '2026-10-06').status, 'failed', 'marked failed ahead of its day');
+}
+
 // --- Notes, limits, locked tasks ------------------------------------------------
 
 {

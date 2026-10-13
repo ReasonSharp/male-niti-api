@@ -787,10 +787,10 @@ paths:
         Only one occurrence is focused at a time. Focusing checkpoints the
         previously focused one -- its timer pauses, or its focus time is
         credited -- and starts this one's: its timer runs if it has one,
-        otherwise focus time is measured. Only an occurrence due today or
-        carried over, not done (a failed appointment can be, and doesn't
-        count as failed while focused), of a task that isn't passive or
-        locked can be focused (409 `NOT_FOCUSABLE`).
+        otherwise focus time is measured. Any day's occurrence can be
+        focused -- a future one too (done ahead of its day) -- unless it's
+        done (a failed appointment can be, and doesn't count as failed while
+        focused), or its task is passive or locked (409 `NOT_FOCUSABLE`).
       parameters:
         - { $ref: "#/components/parameters/XTimezone" }
       requestBody:
@@ -1621,13 +1621,14 @@ paths:
       description: >-
         `complete`/`reopen` (a passive task: `fail`/`unfail` -- its checkbox
         marks it failed); `dismiss`/`restore` hide a carried-over occurrence
-        from the list or show it again. Completing also dismisses the task's
-        earlier missed occurrences and stops a timer on this one. A
-        `recurUntilCompleted` task: completing records it done on this date
-        and starts the next cycle; reopening takes that cycle back -- refused
-        once a later cycle has been resolved (409 `REOPEN_BLOCKED`). Not for
-        a future occurrence (409 `NOT_DUE`), nor a task beyond a lapsed
-        account's limits (402 `TASK_LOCKED`). Which of these an item allows
+        from the list or show it again. A future occurrence can be resolved
+        too (done ahead of its day). Completing also dismisses the task's
+        earlier missed occurrences -- the past ones only: one done early
+        leaves today's and the days between be -- and stops a timer on this
+        one. A `recurUntilCompleted` task: completing records it done on this
+        date and starts the next cycle; reopening takes that cycle back --
+        refused once a later cycle has been resolved (409 `REOPEN_BLOCKED`).
+        Not for a task beyond a lapsed account's limits (402 `TASK_LOCKED`). Which of these an item allows
         is in its `actions`.
       parameters:
         - { $ref: "#/components/parameters/XTimezone" }
