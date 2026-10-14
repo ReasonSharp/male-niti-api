@@ -276,6 +276,32 @@ const needsChoice = (fn, message) => {
  assert.strictEqual(state.findOccurrence(reminder, '2026-10-06').status, 'failed', 'marked failed ahead of its day');
 }
 
+// --- A carried-over occurrence's timer shows only on the day it was set on --------
+
+{
+ const t = task({ id: 'ruc', dueDate: '2026-10-04', dueTime: '10:00', recurUntilCompleted: true, frequency: { type: 'days', interval: 1 } });
+ const live = { id: 'l', taskId: 'ruc', occurrenceDate: '2026-10-04', status: 'pending', resolvedAt: null, dismissed: false, manual: false, pendingReschedules: ['2026-10-05'], comments: [], log: [], focusedSeconds: 0, timerSeconds: 0, timer: null };
+ const state = makeState({ tasks: [t], occurrences: [live], at: '2026-10-05T12:00' });
+ const timerOn = (date) => {
+  const item = dayView(state, 'all', date).items.find((i) => i.taskId === 'ruc' && i.occurrenceDate === date);
+  return item ? !!item.timer : 'no row';
+ };
+ assert.deepStrictEqual([timerOn('2026-10-04'), timerOn('2026-10-05')], [false, false], 'one record, listed on both days');
+
+ state.startTimer('ruc', '2026-10-04', { minutes: 25, start: true });
+ assert.deepStrictEqual([timerOn('2026-10-04'), timerOn('2026-10-05')], [true, false], "set on yesterday's: only yesterday's shows it");
+
+ advance(state, '2026-10-05T12:10');
+ state.startTimer('ruc', '2026-10-05', { minutes: 25, start: true });
+ assert.deepStrictEqual([timerOn('2026-10-04'), timerOn('2026-10-05')], [false, true], "set on today's: only today's shows it");
+ assert.strictEqual(live.timerSeconds, 600, "the timer it replaced: its 10 minutes credited, not lost");
+ assert.strictEqual(state.active.occurrenceDate, '2026-10-05', "and today's is the focused one");
+
+ // Moved since (a pause, say) -- its day no longer one of the record's: it shows on the latest.
+ live.timer.date = '2026-09-30';
+ assert.deepStrictEqual([timerOn('2026-10-04'), timerOn('2026-10-05')], [false, true], 'a day no longer the record\'s: the latest one');
+}
+
 // --- Notes, limits, locked tasks ------------------------------------------------
 
 {

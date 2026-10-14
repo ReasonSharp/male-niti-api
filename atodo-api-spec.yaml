@@ -2552,10 +2552,10 @@ components:
       type: object
       nullable: true
       description: >-
-        Lives on the specific Occurrence being timed (see Occurrence.timer)
-        -- which occurrence that is is already implied by the row it's
-        attached to, so unlike before this carries no occurrenceDate of its
-        own.
+        Lives on the specific Occurrence being timed (see Occurrence.timer).
+        A carried-over `recurUntilCompleted` occurrence is one record listed
+        on each of its days; its timer shows only on the item of the day it
+        was started on (`date`).
       properties:
         mode: { type: string, enum: [countdown, countup] }
         continuePastZero: { type: boolean }
@@ -2567,6 +2567,13 @@ components:
           allOf: [{ $ref: "#/components/schemas/EpochMillis" }]
           nullable: true
           description: null while paused/not yet started.
+        date:
+          type: string
+          format: date
+          description: >-
+            The day it was started on -- the only item it shows on. (Missing
+            on older timers, or no longer one of the occurrence's days after
+            it moved: it shows on the occurrence's latest day.)
 
     LogEntry:
       type: object
