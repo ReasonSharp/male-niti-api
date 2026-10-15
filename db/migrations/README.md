@@ -2,7 +2,7 @@
 
 The database schema, as versioned SQL scripts for dbupdater's `pgupgrade` /
 `pgdowngrade` (https://github.com/maleniti/dbupdater — see its README for
-the exact rules). The platform (`male-niti`'s `mn`) runs them on deploy; the
+the exact rules). The platform (`platform`'s `mn`) runs them on deploy; the
 API itself never changes the schema.
 
 | File | Purpose |
