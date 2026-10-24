@@ -128,10 +128,30 @@ const itemsOn = (state, view, date) => {
  assert.deepStrictEqual(itemsOn(state, 'pending', '2026-10-04'), [], 'pending: done earlier ones aren\'t overdue');
  assert.strictEqual(dayView(state, 'next-recurrence', '2026-10-04').date === '2026-10-04', false, 'next-recurrence: yesterday\'s done one isn\'t listed');
  const allDayItem = dayView(state, 'all', '2026-10-01').items.find((i) => i.taskId === 'a');
- assert.ok(allDayItem.overdue && !allDayItem.completed, 'an all-day passive task still carries over until marked failed or dismissed');
+ assert.ok(!allDayItem.overdue && !allDayItem.completed && !allDayItem.failed, 'an all-day passive task past its day isn\'t overdue');
  const { stats } = require('../../lib/atodo/domain/reports');
  const st = stats(state, { kind: 'task', taskId: 'p' });
  assert.strictEqual(st.completed, 5, 'stats count each done-by-time occurrence (Oct 1-5)');
+}
+
+// --- An all-day passive task: never overdue, listed a day after, then dismissed ---
+
+{
+ const reminder = task({ id: 'r', dueDate: '2026-10-04', allDay: true, dueTime: null, passive: true, frequency: { type: 'once', interval: 1 } });
+ const state = makeState({ tasks: [reminder], at: '2026-10-05T09:00' });
+ state.runMaintenance();
+ assert.deepStrictEqual(itemsOn(state, 'next-recurrence', '2026-10-04'), ['r@2026-10-04'], 'next-recurrence: yesterday\'s listed as it is, not overdue');
+ assert.deepStrictEqual(itemsOn(state, 'pending', '2026-10-04'), ['r@2026-10-04'], 'pending: yesterday\'s still pending');
+ const item = dayView(state, 'next-recurrence', '2026-10-04').items[0];
+ assert.ok(item.actions.includes('fail') && item.actions.includes('dismiss'), 'can be marked failed belatedly, or dismissed');
+ state.dismiss('r', '2026-10-04');
+ assert.deepStrictEqual(itemsOn(state, 'pending', '2026-10-04'), [], 'pending: dismissed, gone');
+ state.restore('r', '2026-10-04');
+ advance(state, '2026-10-06T09:00');
+ state.runMaintenance();
+ assert.deepStrictEqual(itemsOn(state, 'next-recurrence', '2026-10-04'), [], 'next-recurrence: dismissed on its own a day later');
+ assert.deepStrictEqual(itemsOn(state, 'pending', '2026-10-04'), [], 'pending: never overdue, so gone too');
+ assert.deepStrictEqual(itemsOn(state, 'all', '2026-10-04'), ['r@2026-10-04+dismissed'], 'all: still there, dismissed');
 }
 
 // --- Focus exempts an appointment from failing --------------------------------
